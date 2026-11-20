@@ -1,0 +1,9 @@
+package: stadeum/pods
+version: 0.1.0
+description: A machine of its own for every coding job, with the app running and served over HTTPS (PLAN.md §8).
+job:
+  tools: [claim, bash, edit, git, url, bake, release]
+requires:
+  secrets: [PODS_URL, PODS_TOKEN]
+  # A person's own, not the box's: `git` reads it when it's set.
+  optional: [GITHUB_TOKEN]
