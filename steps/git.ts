@@ -1,10 +1,15 @@
 import { z, defineStep } from "strut";
-import { pod, quote, run, shown, type Ctx } from "./_pods.js";
+import { gitAuth, httpsHost, pod, run, shown, signIn, type Ctx } from "./_pods.js";
 
-/** Hands git the token from this command's environment, so it's never on
- *  the pod's disk or in a remote's URL. An empty helper first drops any
- *  other. */
-const HELPER = `!f() { test "$1" = get && echo username=x-access-token && echo "password=$POD_GIT_TOKEN"; }; f`;
+/** The first https address among git's arguments (`clone <url>`,
+ *  `fetch <url>`), its quotes dropped. */
+const urlIn = (args: string) => args.split(/\s+/).map((w) => w.replace(/^['"]|['"]$/g, "")).find((w) => httpsHost(w));
+
+/** The address of `origin` where the command runs, if it has one. */
+async function origin(c: Ctx, p: string, cwd: string): Promise<string | undefined> {
+  const r = await run(c, p, "git remote get-url origin", { cwd, timeoutSeconds: 30 });
+  return r.exit_code === 0 ? r.output.trim() || undefined : undefined;
+}
 
 /** `owner/repo` of a GitHub remote, https or ssh. */
 function githubRepo(remote: string): { owner: string; repo: string } | undefined {
@@ -46,7 +51,7 @@ async function openPr(
 export default defineStep({
   type: "stadeum/pods/git",
   description:
-    "Run `git <args>` IN THE JOB'S POD with the person's GitHub token available to that one command, for what needs it: clone, fetch, pull, push. " +
+    "Run `git <args>` IN THE JOB'S POD with the person's token for the remote's host available to that one command, for what needs it: clone, fetch, pull, push. " +
     "In `repo` (a repository under /workspaces), or in /workspaces itself, where `clone <url>` makes /workspaces/<name>. " +
     "With `pr`, a successful push opens a pull request from the pushed branch (or returns the open one). " +
     "Plain git that needs no token (status, diff, commit, checkout -b) can run through bash too. Claim the pod first.",
@@ -72,19 +77,20 @@ export default defineStep({
   async run(cfg, ctx) {
     const c = ctx as unknown as Ctx;
     const { pod: p } = await pod(c);
-    const token = await c.services.secrets.get("GITHUB_TOKEN");
     const cwd = cfg.repo ? `/workspaces/${cfg.repo}` : "/workspaces";
     const timeout = cfg.timeout ?? 600;
-    const auth = token ? `-c credential.helper= -c ${quote(`credential.helper=${HELPER}`)} ` : "";
-    const env = { GIT_TERMINAL_PROMPT: "0", ...(token ? { POD_GIT_TOKEN: token } : {}) };
-    const hide = (s: string) => (token ? s.split(token).join("***") : s);
+    // The remote it talks to: the address in its arguments, else origin's.
+    // Its host's token, and no other, is the command's.
+    const url = urlIn(cfg.args) ?? (await origin(c, p, cwd));
+    const auth = await gitAuth(c, url);
 
-    const r = await run(c, p, `git ${auth}${cfg.args}`, { cwd, env, timeoutSeconds: timeout });
-    const output = hide(shown(r, timeout));
+    const r = await run(c, p, `git ${auth.config}${cfg.args}`, { cwd, env: auth.env, timeoutSeconds: timeout });
+    const said = auth.hide(shown(r, timeout));
     const ok = r.exit_code === 0 && !r.timed_out && !r.cancelled;
+    const why = !ok && url ? signIn(c, url, auth, said) : undefined;
+    const output = why ? `${said}\n${why}` : said;
     if (!ok || !cfg.pr) return { output, ok };
 
-    if (!token) throw new Error("opening a pull request needs the person's GITHUB_TOKEN, which isn't set");
     const facts = await run(
       c,
       p,
@@ -93,7 +99,9 @@ export default defineStep({
     );
     const [remote = "", head = "", originHead = ""] = facts.output.trim().split("\n");
     const gh = githubRepo(remote);
-    if (facts.exit_code !== 0 || !gh) throw new Error(`pr: origin isn't a GitHub repository (${hide(remote) || "no origin"})`);
+    if (facts.exit_code !== 0 || !gh) throw new Error(`pr: origin isn't a GitHub repository (${auth.hide(remote) || "no origin"})`);
+    const token = await c.services.secrets.git?.(`https://github.com/${gh.owner}/${gh.repo}`);
+    if (!token) throw new Error(`opening a pull request needs a token for github.com, and no account on github.com is connected for ${c.principal ?? c.actor ?? "the person running this job"}`);
     const base = cfg.pr.base ?? originHead.replace(/^origin\//, "");
     const pr = await openPr(c, token, { ...gh, head, base }, cfg.pr);
     return { output, ok, pr };

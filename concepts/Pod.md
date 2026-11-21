@@ -15,10 +15,15 @@ pod. Your own `bash` and editor act on strut's disk, never on the pod.
 ## The loop
 
 1. **Claim** the pod with the workspace, usually the main repository's
-   name. With an image, the stack is already running: run `git pull` with
-   `git`, then `pod up` with `bash`. A bare pod has nothing yet: clone the
-   repositories with `git` (`clone <url>`, into `/workspaces`), run
-   `pod survey`, and write `.pod/` in the main repository.
+   name. A workspace the box keeps comes with its repositories at
+   `/workspaces/<name>`, the main one first: `claim` clones them into a
+   bare pod and fetches them in a pod from an image. Its answer says, for
+   each one, what it did, or why it couldn't (pass that on to the
+   person). With an image, the stack is already running: run `git pull`
+   with `git`, then `pod up` with `bash`. A bare pod has no stack yet:
+   run `pod survey`, and write `.pod/` in the main repository. For a
+   workspace the box doesn't know, `claim` brings no repositories: clone
+   them with `git` (`clone <url>`, into `/workspaces`).
 2. **Bring it up.** `pod up`, then `pod status`. When something fails,
    read `pod logs <name> -n 100`, fix the config, and `pod restart <name>`
    or `pod up` again. Each try takes seconds. Keep going until
@@ -37,8 +42,10 @@ pod. Your own `bash` and editor act on strut's disk, never on the pod.
    `.pod/` and open a PR with `git` (`push -u origin <branch>` with `pr`),
    so later bakes from the base branch have it.
 6. **Remember.** Keep what the next job needs on a page under this one,
-   `<workspace> pod`: the repositories (the main one first), the services
-   and ports, the test user, and what broke and how it was fixed.
+   `<workspace> pod`: the services and ports, the test user, and what
+   broke and how it was fixed. The workspace holds its repositories. For
+   a workspace the box doesn't know, list them there too, the main one
+   first.
 
 ## `.pod/`
 

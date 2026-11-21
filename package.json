@@ -1,0 +1,9 @@
+{
+  "name": "strut-pods",
+  "private": true,
+  "type": "module",
+  "description": "The stadeum/pods strut package. Not an npm package: strut.yaml and its folders are the package.",
+  "scripts": {
+    "test": "node --import \"${STRUT_DIR:-../../strut}/node_modules/tsx/dist/esm/index.mjs\" --test --test-concurrency=1 package.test.ts"
+  }
+}

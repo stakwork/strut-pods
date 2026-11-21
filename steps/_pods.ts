@@ -1,6 +1,8 @@
 /**
  * What every step of the package shares (PLAN.md §8): a call to the pods
- * service, the job's pod from its hold, and a command run in the pod.
+ * service, the job's pod from its hold, a command run in the pod, git's
+ * credential for one command, and a workspace's repositories from the
+ * graph.
  *
  * The service is at `PODS_URL`, with the box's tenant token in
  * `PODS_TOKEN`. A pod's podd is behind the service, at
@@ -10,12 +12,24 @@
 export const RELEASE = "stadeum/pods/release";
 const KIND = "pod";
 
+interface StepDef {
+  input: { parse(v: unknown): unknown };
+  run(cfg: unknown, ctx: unknown): Promise<unknown>;
+}
+
 export interface Ctx {
   job?: string;
+  /** The run's person: whose tokens `secrets.git` reads. */
+  actor?: string;
+  principal?: string;
   control?: { state?: string };
+  /** Strut's steps, `graph/*` among them, run with this step's context. */
+  registry?: Record<string, StepDef | undefined>;
   services: {
     http: (url: string, opts?: { method?: string; headers?: Record<string, string>; body?: unknown; timeout?: number }) => Promise<{ status: number; ok: boolean; headers: Record<string, string>; body: unknown }>;
-    secrets: { get(name: string): Promise<string | undefined> };
+    /** `git(url)`: the run's token for the repository's host (strut's map
+     *  by host), there because strut.yaml says `requires.git: true`. */
+    secrets: { get(name: string): Promise<string | undefined>; git?(url: string): Promise<string | undefined> };
     jobs?: {
       hold(job: string, hold: { id: string; kind: string; release: { type: string; input: unknown }; note?: string; url?: string }): Promise<void>;
       release(job: string, id: string): Promise<void>;
@@ -188,3 +202,127 @@ export function shown(r: Ran, timeoutSeconds: number): string {
 
 /** Single-quotes a word for bash. */
 export const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+// ── git ───────────────────────────────────────────────────────────────────
+
+/** The helper git runs for a credential, as strut's own does (its
+ *  src/steps/lib/git/_shared.ts): on `get`, it reads the request's `host=`
+ *  line and answers only when that is the token's host, with the token from
+ *  the command's environment. So the token is never in the command, a
+ *  remote's URL or the pod's disk, and a redirect to another host gets
+ *  nothing. `x-access-token` is the user name GitHub takes with a token;
+ *  GitLab and Forgejo take any. */
+const HELPER =
+  '!f() { test "$1" = get || return 0; h=; ' +
+  'while IFS= read -r l; do case "$l" in host=*) h="${l#host=}";; esac; done; ' +
+  `test "$(printf %s "$h" | tr '[:upper:]' '[:lower:]')" = "$POD_GIT_HOST" || return 0; ` +
+  'echo username=x-access-token; echo "password=$POD_GIT_TOKEN"; }; f';
+
+/** The host a token for `url` would serve (`github.com`,
+ *  `git.acme.com:3000`), when it is an https address. Never plain http: a
+ *  pod's `localhost` is the pod, not strut's machine. */
+export function httpsHost(url: string): string | undefined {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" ? u.host.toLowerCase() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** git's credential for one command on the repository at `url`. */
+export interface GitAuth {
+  /** git's options, before its command: every helper of the pod's dropped,
+   *  token or not, so none answers or keeps one; with a token, the one
+   *  that answers its host alone. */
+  config: string;
+  /** The command's own environment: no prompt, and the token for the helper. */
+  env: Record<string, string>;
+  /** The host a token would serve, with one or without. */
+  host?: string;
+  token: boolean;
+  /** `s` with the token cut out. */
+  hide(s: string): string;
+}
+
+/** The run's token for `url`'s host (`secrets.git`: the person's own, by
+ *  strut's map of hosts), for one git command. None for a host the person
+ *  has none for, or an address that isn't https. */
+export async function gitAuth(ctx: Ctx, url: string | undefined): Promise<GitAuth> {
+  const host = url ? httpsHost(url) : undefined;
+  const token = host ? await ctx.services.secrets.git?.(url!) : undefined;
+  const base = { config: "-c credential.helper= ", env: { GIT_TERMINAL_PROMPT: "0" }, ...(host ? { host } : {}) };
+  if (!token || !host) return { ...base, token: false, hide: (s) => s };
+  return {
+    config: `${base.config}-c ${quote(`credential.helper=${HELPER}`)} `,
+    env: { ...base.env, POD_GIT_TOKEN: token, POD_GIT_HOST: host },
+    host,
+    token: true,
+    hide: (s) => s.split(token).join("***"),
+  };
+}
+
+/** What git says when a remote asks for a sign-in it didn't get. */
+const SIGN_IN = /could not read (Username|Password)|terminal prompts disabled|Authentication failed|HTTP Basic: Access denied/i;
+
+/** A git command's failure said for the person, when the remote asked for a
+ *  sign-in and the run had no token for its host: whose account isn't
+ *  connected, for which host. Undefined for any other failure. */
+export function signIn(ctx: Ctx, url: string, auth: GitAuth, output: string): string | undefined {
+  if (auth.token || !auth.host || !SIGN_IN.test(output)) return undefined;
+  const who = ctx.principal ?? ctx.actor ?? "the person running this job";
+  return `${url} asks for a sign-in (it is private, or not there), and no account on ${auth.host} is connected for ${who}: connect one, then try again.`;
+}
+
+// ── a workspace's repositories ────────────────────────────────────────────
+
+/** A repository of a workspace, as the graph holds it. */
+export interface Repository {
+  url: string;
+  name: string;
+}
+
+/** A repository's folder under /workspaces: one plain name. */
+export const FOLDER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
+/** Strut's own `graph/<step>`, run with this step's context so its rules
+ *  hold as for any other caller. Undefined when this strut has no graph. A
+ *  graph step answers a failure as text. */
+async function graph<T>(ctx: Ctx, step: string, config: Record<string, unknown>): Promise<T | string | undefined> {
+  const def = ctx.registry?.[`graph/${step}`];
+  return def ? ((await def.run(def.input.parse(config), ctx)) as T | string) : undefined;
+}
+
+interface Found {
+  ref_id: string;
+  properties: Record<string, unknown>;
+}
+
+const text = (v: unknown): string => (typeof v === "string" ? v : "");
+
+/**
+ * The workspace's repositories, its main one first, then by name, as
+ * stadeum/code keeps them (its `Repositories` page has the contract): a
+ * `Workspace` by `name`, whose `main` is a repository's `url`, and
+ * `Workspace -[INCLUDES]-> Repository`. Read if they are there, never
+ * required: none when the box has no such workspace, no such types (the
+ * package isn't installed) or no graph.
+ */
+export async function repositories(ctx: Ctx, workspace: string): Promise<Repository[]> {
+  const found = await graph<{ nodes: Found[] }>(ctx, "find", { node_type: "Workspace", where: { name: workspace }, limit: 1 });
+  if (found === undefined || (typeof found === "string" && /unknown node type/.test(found))) return [];
+  if (typeof found === "string") throw new Error(`reading the workspace ${workspace}: ${found}`);
+  const space = found.nodes[0];
+  if (!space) return [];
+  const near = await graph<Array<{ ref_id: string; direction: string }>>(ctx, "graph-neighbors", { ref_id: space.ref_id, edge_type: ["INCLUDES"], node_type: ["Repository"] });
+  if (typeof near === "string") throw new Error(`reading the workspace ${workspace}'s repositories: ${near}`);
+  const ids = (near ?? []).filter((n) => n.direction === "forward").map((n) => n.ref_id);
+  if (!ids.length) return [];
+  const repos = await graph<{ nodes: Found[] }>(ctx, "find", { node_type: "Repository", where: { ref_id: { in: ids } }, limit: 500 });
+  if (typeof repos === "string") throw new Error(`reading the workspace ${workspace}'s repositories: ${repos}`);
+  const main = text(space.properties["main"]);
+  return (repos?.nodes ?? [])
+    .map((n) => ({ url: text(n.properties["url"]), name: text(n.properties["name"]) }))
+    .filter((r) => r.url)
+    .sort((a, b) => (a.url === main ? -1 : b.url === main ? 1 : a.name.localeCompare(b.name) || a.url.localeCompare(b.url)));
+}
