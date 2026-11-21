@@ -11,10 +11,11 @@
  * Stand-ins, all on this machine, so nothing reaches a network:
  *
  * - the pods service: an HTTP server answering what the package calls
- *   (`POST /pods`, podd's `exec` and `ready`). Its exec runs the command
- *   with bash in a folder that stands for the pod's `/workspaces`, and
- *   records what it was sent. A pod "from an image" starts with the
- *   image's folder copied in;
+ *   (`POST /pods`, a bake and the images, podd's `exec` and `ready`). Its
+ *   exec runs the command with bash in a folder that stands for the pod's
+ *   `/workspaces`, and records what it was sent. A pod "from an image"
+ *   starts with the image's folder copied in. A bake stays `building`
+ *   until a test sets its state;
  * - two forges: https servers, one at `127.0.0.1`, one at `localhost`,
  *   each its own host, serving bare repositories over git's plain http
  *   protocol. A private one answers only its own forge's token, and each
@@ -137,14 +138,25 @@ interface Pods {
   workspaces(pod: string): string;
   /** Workspaces with an image: what a pod from it starts with. */
   images: Map<string, { image: number; from: string }>;
+  /** Each workspace's bakes, oldest first: a test moves one on by setting its state. */
+  bakes: Map<string, Bake[]>;
   close(): Promise<void>;
+}
+
+interface Bake {
+  workspace: string;
+  image: number;
+  state: string;
+  reason?: string;
+  from_pod: string;
 }
 
 async function pods(dir: string, cainfo: string): Promise<Pods> {
   const byJob = new Map<string, { pod: string; workspace: string; image: number | null }>();
   const execs: Exec[] = [];
   const images = new Map<string, { image: number; from: string }>();
-  const runs = new Map<string, { output: string; done: boolean; code: number | null; signal: number | null; child: ChildProcess; waiters: Array<() => void> }>();
+  const bakes = new Map<string, Bake[]>();
+  const runs =new Map<string, { output: string; done: boolean; code: number | null; signal: number | null; child: ChildProcess; waiters: Array<() => void> }>();
   const workspaces = (pod: string) => join(dir, pod, "workspaces");
   const body = async (req: IncomingMessage): Promise<any> => {
     const chunks: Buffer[] = [];
@@ -169,6 +181,22 @@ async function pods(dir: string, cainfo: string): Promise<Pods> {
         return json(res, 201, { ...p, state: "running" });
       }
       return json(res, 200, { ...p, state: "running" });
+    }
+    const bake = /^\/pods\/([^/]+)\/bake$/.exec(path);
+    if (req.method === "POST" && bake) {
+      const p = [...byJob.values()].find((x) => x.pod === bake[1]);
+      if (!p) return json(res, 404, { error: "no such pod" });
+      const list = bakes.get(p.workspace) ?? [];
+      bakes.set(p.workspace, list);
+      const b: Bake = { workspace: p.workspace, image: list.length + 1, state: "building", from_pod: p.pod };
+      list.push(b);
+      return json(res, 202, { image: b.image, state: b.state });
+    }
+    const listed = /^\/workspaces\/([^/]+)\/images$/.exec(path);
+    if (req.method === "GET" && listed) {
+      const list = [...(bakes.get(decodeURIComponent(listed[1]!)) ?? [])].reverse();
+      const current = list.find((b) => b.state === "ready")?.image;
+      return json(res, 200, list.map((b) => ({ ...b, current: b.image === current })));
     }
     const m = /^\/pods\/([^/]+)\/podd(\/.*)$/.exec(path);
     if (!m) return json(res, 404, { error: "not found" });
@@ -215,6 +243,7 @@ async function pods(dir: string, cainfo: string): Promise<Pods> {
     execs,
     workspaces,
     images,
+    bakes,
     close: () => new Promise((ok) => server.close(() => ok())),
   };
 }
@@ -533,6 +562,85 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     const denied = await step("stadeum/pods/git", { args: `ls-remote ${b.url("acme/api")}` }, "bob", "job-bob");
     assert.equal(denied.out.ok, false);
     assert.match(denied.out.output, new RegExp(`no account on ${b.host} is connected for bob: connect one, then try again\\.$`));
+  });
+
+  // ── the workspace's page ────────────────────────────────────────────────
+
+  /** The live Concept page of that name. */
+  const concept = async (name: string): Promise<{ ref_id: string; properties: Record<string, unknown> } | undefined> => {
+    const run = await step("graph/find", { node_type: "Concept", where: { name }, limit: 1 }, "root", `graph-${++n}`);
+    assert.equal(run.status, "success", JSON.stringify(run.error));
+    return run.out.nodes[0];
+  };
+  const parentsOf = async (ref: string): Promise<string[]> => {
+    const run = await step("graph/graph-neighbors", { ref_id: ref, edge_type: ["PARENT_OF"] }, "root", `graph-${++n}`);
+    assert.equal(run.status, "success", JSON.stringify(run.error));
+    return (run.out as Array<{ name: string; direction: string }>).filter((x) => x.direction === "reverse").map((x) => x.name).sort();
+  };
+  /** `bake` in the pod `shop`'s repositories were cloned into. */
+  const bake = async (config: Record<string, unknown>) => {
+    const run = await step("stadeum/pods/bake", config, "ada", "job-shop");
+    assert.equal(run.status, "success", JSON.stringify(run.error));
+    return run.out;
+  };
+  const latest = () => service.bakes.get("shop")!.at(-1)!;
+  const PAGE = ["```mermaid", "graph LR", "  web -->|API_URL| api", "```", "", "web is the frontend; it calls api.", "", "web on 5173, api on 8000. The test user is ada."].join("\n");
+
+  it("writes the workspace's page only once this pod's bake is ready, under Pod, and deletes the old page", async () => {
+    const podPage = await concept("Pod");
+    assert.ok(podPage, "the package's Pod page");
+    // What jobs kept before: `shop pod`, under Pod.
+    const old = await node("Concept", { name: "shop pod", description: "Running shop.", docs: "web on 5173." });
+    await step("graph/create-triplet", { source_ref_id: podPage.ref_id, target_ref_id: old, edge_type: "PARENT_OF" }, "root", `graph-${++n}`);
+
+    // Another pod's image, ready: not this pod's bake.
+    service.bakes.set("shop", [{ workspace: "shop", image: 1, state: "ready", from_pod: "pod-elsewhere" }]);
+    let out = await bake({ status: true, page: PAGE });
+    assert.equal(out.page.state, "not written");
+    assert.match(out.page.note, /^This pod has baked no image/);
+
+    // This pod's bake: building, then failed. Nothing is written.
+    out = await bake({ page: PAGE });
+    assert.equal(out.started, 2);
+    assert.deepEqual(out.page, { name: "shop workspace", state: "waiting", note: "Not written yet: image 2 is still building. Pass the page again with `status: true` once it's ready." });
+    Object.assign(latest(), { state: "failed", reason: "pod check failed" });
+    out = await bake({ status: true, page: PAGE });
+    assert.equal(out.page.state, "not written");
+    assert.match(out.page.note, /^Image 2 failed: pod check failed\./);
+    assert.equal(await concept("shop workspace"), undefined);
+
+    // Baked again, and ready: written, and the old page is gone.
+    assert.equal((await bake({})).started, 3);
+    latest().state = "ready";
+    out = await bake({ status: true, page: PAGE });
+    assert.equal(out.page.state, "written", out.page.note);
+    const page = await concept("shop workspace");
+    assert.ok(page, out.page.note);
+    assert.equal(page.properties["docs"], PAGE);
+    // Under Codebase too where stadeum/code ships it.
+    assert.deepEqual(await parentsOf(page.ref_id), (await concept("Codebase")) ? ["Codebase", "Pod"] : ["Pod"]);
+    assert.equal(await concept("shop pod"), undefined, "the old page is deleted");
+    assert.match(out.page.note, /shop pod is deleted\.$/);
+  });
+
+  it("changes the page in place with edits, never with a whole new text, and links it under Codebase", async () => {
+    if (!(await concept("Codebase"))) await node("Concept", { name: "Codebase", description: "The box's code.", docs: "Each repository's page." });
+    const before = (await concept("shop workspace"))!;
+    let out = await bake({ status: true, page: "Something else entirely." });
+    assert.equal(out.page.state, "not written");
+    assert.match(out.page.note, /already has docs/);
+
+    out = await bake({ status: true, edits: [{ old: "The test user is ada.", new: "The test user is ada, seeded by .pod/setup.sh." }] });
+    assert.equal(out.page.state, "written", out.page.note);
+    const after = (await concept("shop workspace"))!;
+    assert.equal(after.ref_id, before.ref_id, "the same page");
+    assert.equal(after.properties["docs"], PAGE.replace("The test user is ada.", "The test user is ada, seeded by .pod/setup.sh."));
+    assert.deepEqual(await parentsOf(after.ref_id), ["Codebase", "Pod"]);
+
+    // A bake with no page leaves it as it is.
+    latest().state = "ready";
+    assert.equal((await bake({})).page, undefined);
+    assert.equal((await concept("shop workspace"))!.properties["docs"], after.properties["docs"]);
   });
 
   it("never puts a token in a run's record or a log", () => {

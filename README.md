@@ -10,7 +10,7 @@ a pod: a machine of the job's own, through the pods service.
 | `edit { command, path, ... }` | Strut's editor (`view`, `create`, `str_replace`, `insert`) on the pod's files |
 | `git { args, repo?, pr? }` | `git <args>` in the pod, with the person's token for the remote's host for that one command. With `pr`, a push opens a pull request |
 | `url { port, path? }` | A link to one of the pod's ports, `{ url, expires }`. The job's hold keeps a 12-hour one, so its checks open `{{ urls.pod }}/<path>` |
-| `bake { status? }` | The workspace's next image, from the pod |
+| `bake { status?, page?, edits? }` | The workspace's next image, from the pod. With `page` or `edits`, the workspace's page, once this pod's image is ready |
 | `release { pod? }` | Destroys the pod. Strut runs it too when the job is deleted or swept |
 
 Each step is a few HTTP calls to the service, at `PODS_URL` with the box's
@@ -24,6 +24,18 @@ contract): a `Workspace` by name, its `main`, and its `INCLUDES` links to
 `Repository` nodes. Nothing requires that package: on a box without it,
 or for a name it doesn't know, `claim` brings no repositories and the
 agent clones them.
+
+**A workspace's page**, `<workspace> workspace`, is a Concept page: a
+Mermaid diagram of its systems and how they connect, the system in words,
+and how to run it (PLAN.md §3, "Remember"). The agent writes the page and
+`bake` stores it, through strut's own graph steps, only once the newest
+image baked from this pod is ready (the service's `from_pod`). Nothing is
+written while it builds or after it failed. The first time it takes the
+whole text (`page`). After that it takes `edits`, so the page is changed
+in place and keeps its claims and history: strut's `graph/edit-node`
+refuses a whole new text for a page that has one. It's linked under `Pod`,
+and under `Codebase` on a box that has that page. Then the old
+`<workspace> pod` page is deleted: the agent folded in what still holds.
 
 **Git tokens are the person's, by host.** `requires: { git: true }` lets
 the steps read the run's token for a repository's host,

@@ -326,3 +326,111 @@ export async function repositories(ctx: Ctx, workspace: string): Promise<Reposit
     .filter((r) => r.url)
     .sort((a, b) => (a.url === main ? -1 : b.url === main ? 1 : a.name.localeCompare(b.name) || a.url.localeCompare(b.url)));
 }
+
+// ── the workspace's page ──────────────────────────────────────────────────
+
+/** One of the workspace's images, as the service lists them, newest first. */
+export interface Image {
+  workspace: string;
+  image: number;
+  state: string;
+  reason?: string;
+  current?: boolean;
+  /** The pod it was baked from. */
+  from_pod?: string | null;
+}
+
+/** What the page is to say: its whole text when it has none yet, or
+ *  changes to it, each quoting the text it changes. */
+export interface PageChange {
+  page?: string;
+  edits?: Array<{ old: string; new: string }>;
+}
+
+export interface PageResult {
+  name: string;
+  state: "written" | "waiting" | "not written";
+  note: string;
+}
+
+/** The workspace's page. The bare name is its main repository's page. */
+export const pageName = (workspace: string) => `${workspace} workspace`;
+/** Where jobs kept what they learned before: folded into the page, then deleted. */
+const OLD_PAGE = (workspace: string) => `${workspace} pod`;
+/** The page's parents: this package's `Pod`, and `Codebase` on a box that has it. */
+const PARENTS = ["Pod", "Codebase"];
+
+/** A graph step that must succeed: its answer, or an error with its words. */
+async function mustGraph<T>(ctx: Ctx, step: string, config: Record<string, unknown>): Promise<T> {
+  const out = await graph<T>(ctx, step, config);
+  if (out === undefined) throw new Error("this strut has no graph");
+  if (typeof out === "string") throw new Error(out);
+  return out;
+}
+
+/** The live Concept page of that name, or none. */
+async function concept(ctx: Ctx, name: string): Promise<Found | undefined> {
+  const { nodes } = await mustGraph<{ nodes: Found[] }>(ctx, "find", { node_type: "Concept", where: { name }, limit: 1 });
+  return nodes[0];
+}
+
+/**
+ * Writes the workspace's page (PLAN.md §3, "Remember"): its systems and how
+ * they connect, and how to run them. Only once this pod's newest image is
+ * ready, because that is when the page is proven: `pod check` passed in the
+ * build and on a machine started from the image. While it builds, or after
+ * it failed, nothing is written.
+ *
+ * The page is changed in place, so its claims and history stay with it:
+ * `page` is its first text, and `edits` change it after that (strut's
+ * `graph/edit-node` refuses a whole new text for a page that has one, so a
+ * line the writer forgot to copy isn't lost). Then it is linked under each
+ * parent the box has. Last, the old `<workspace> pod` page is deleted: the
+ * agent read it and folded what matters into the page.
+ */
+export async function writePage(ctx: Ctx, h: Held, images: Image[], change: PageChange): Promise<PageResult> {
+  const name = pageName(h.workspace);
+  const not = (note: string): PageResult => ({ name, state: "not written", note });
+  const mine = images.find((i) => i.from_pod === h.pod);
+  if (!mine) return not("This pod has baked no image. The page is written once its bake is ready.");
+  if (mine.state === "building") {
+    return { name, state: "waiting", note: `Not written yet: image ${mine.image} is still building. Pass the page again with \`status: true\` once it's ready.` };
+  }
+  if (mine.state !== "ready") return not(`Image ${mine.image} ${mine.state}${mine.reason ? `: ${mine.reason}` : ""}. The page waits for a bake that's ready.`);
+
+  let ref: string;
+  try {
+    const found = await concept(ctx, name);
+    if (found) {
+      ref = found.ref_id;
+      await mustGraph(ctx, "edit-node", { ref_id: ref, ...(change.edits?.length ? { edits: change.edits } : { node_data: { docs: change.page } }) });
+    } else if (change.page?.trim()) {
+      const description = `The systems of the workspace ${h.workspace}, how they connect, and how to run them: written by its bakes.`;
+      ref = (await mustGraph<{ ref_id: string }>(ctx, "create-node", { node_type: "Concept", node_data: { name, description, docs: change.page } })).ref_id;
+    } else {
+      return not(`${name} doesn't exist yet: pass \`page\`, its whole text.`);
+    }
+  } catch (e) {
+    return not(e instanceof Error ? e.message : String(e));
+  }
+
+  const said = [`${name} is written, from image ${mine.image}.`];
+  try {
+    const under: string[] = [];
+    for (const parent of PARENTS) {
+      const p = await concept(ctx, parent);
+      if (!p) continue;
+      await mustGraph(ctx, "create-triplet", { source_ref_id: p.ref_id, target_ref_id: ref, edge_type: "PARENT_OF" });
+      under.push(parent);
+    }
+    if (under.length) said.push(`It is under ${under.join(" and ")}.`);
+    const old = await concept(ctx, OLD_PAGE(h.workspace));
+    if (old && old.ref_id !== ref) {
+      await mustGraph(ctx, "delete-node", { ref_id: old.ref_id, reason: `folded into ${name}` });
+      said.push(`${OLD_PAGE(h.workspace)} is deleted.`);
+    }
+  } catch (e) {
+    said.push(`Then: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return { name, state: "written", note: said.join(" ") };
+}

@@ -41,11 +41,26 @@ pod. Your own `bash` and editor act on strut's disk, never on the pod.
 5. **Bake** once `pod check` passes and the app looks right. Commit
    `.pod/` and open a PR with `git` (`push -u origin <branch>` with `pr`),
    so later bakes from the base branch have it.
-6. **Remember.** Keep what the next job needs on a page under this one,
-   `<workspace> pod`: the services and ports, the test user, and what
-   broke and how it was fixed. The workspace holds its repositories. For
-   a workspace the box doesn't know, list them there too, the main one
-   first.
+6. **Remember.** The workspace's page, `<workspace> workspace`
+   (`hive workspace`), is what a person or the next job most needs: how
+   its systems fit together, and what to set up to run them. The bake writes
+   it, because that is when it's proven: `pod check` passed in the build.
+   Once the image is ready, pass the page to `bake` with `status: true`:
+   `page`, its whole text, the first time; after that, `edits` to the page
+   as you read it. It holds, in this order:
+   - a diagram of the workspace's systems, in a `mermaid` block. Each
+     arrow is a real connection (an HTTP route, a queue, a webhook, a
+     shared database), labelled with the setting that points it, so every
+     arrow is something the setup wired;
+   - the system in words: how the parts fit together;
+   - how to run it: the services and ports, the test user, and what broke
+     and how it was fixed.
+
+   It sits under this page, and under `Codebase` when the box has one. A
+   pod released without a bake leaves no page. The workspace holds its
+   repositories; for one the box doesn't know, list them on the page too,
+   the main one first. An old `<workspace> pod` page goes once the page is
+   written: read it first and fold in what still holds.
 
 ## `.pod/`
 

@@ -1,5 +1,5 @@
 package: stadeum/pods
-version: 0.2.0
+version: 0.3.0
 description: A machine of its own for every coding job, with the workspace's repositories cloned and the app running, served over HTTPS (PLAN.md §8).
 job:
   tools: [claim, bash, edit, git, url, bake, release]
