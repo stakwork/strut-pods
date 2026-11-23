@@ -9,7 +9,7 @@ and a link to see it.
 | `bash { command, cwd?, timeout? }` | A command in the pod, with the result strut's own `bash` gives |
 | `edit { command, path, ... }` | Strut's editor (`view`, `create`, `str_replace`, `insert`) on the pod's files |
 | `git { args, repo?, pr? }` | `git <args>` in the pod, with the person's token for the remote's host for that one command. With `pr`, a push opens a pull request |
-| `url { port, path? }` | A link to one of the pod's ports, `{ url, expires }`. The job's hold keeps a 12-hour one, so its checks open `{{ urls.pod }}/<path>` |
+| `url { port, path?, name? }` | A link to one of the pod's ports, `{ url, expires }`. The job's hold keeps a 12-hour one, so its checks open `{{ urls.pod }}/<path>`. With `name` (a second frontend, `admin`), the hold keeps it as `{{ urls.admin }}` instead, a row of its own on the person's job card, and `urls.pod` stays put |
 | `bake { status?, page?, edits? }` | The workspace's next image, from the pod. Once this pod's image is ready, `/workspaces/.pod` saved to strut and, with `page` or `edits`, the workspace's page |
 | `release { pod? }` | Destroys the pod. Strut runs it too when the job is deleted or swept. A trial's pod takes its images with it |
 

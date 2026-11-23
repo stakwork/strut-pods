@@ -34,9 +34,12 @@ export interface Ctx {
      *  by host), there because strut.yaml says `requires.git: true`. */
     secrets: { get(name: string): Promise<string | undefined>; git?(url: string): Promise<string | undefined> };
     jobs?: {
-      hold(job: string, hold: { id: string; kind: string; release: { type: string; input: unknown }; note?: string; url?: string }): Promise<void>;
+      /** `links`: more addresses on the hold by name, each the job's
+       *  `urls.<name>` (stakwork/strut, `JobHold.links`). A strut from
+       *  before them keeps `url` alone. */
+      hold(job: string, hold: { id: string; kind: string; release: { type: string; input: unknown }; note?: string; url?: string; links?: Record<string, string> }): Promise<void>;
       release(job: string, id: string): Promise<void>;
-      holds(job: string): Promise<Array<{ id: string; kind: string; note?: string; url?: string; release?: { type: string; input: unknown } }>>;
+      holds(job: string): Promise<Array<{ id: string; kind: string; note?: string; url?: string; links?: Record<string, string>; release?: { type: string; input: unknown } }>>;
       /** One file of the job's directory, as strut's `job/read` reads it. */
       read?(job: string, path: string, opts?: { maxChars?: number }): Promise<{ text?: string } | null>;
     };
@@ -96,7 +99,11 @@ export interface Held {
   pod: string;
   /** The workspace the pod is for: its repositories and its page. */
   workspace: string;
+  /** The link the job's checks open, `{{ urls.pod }}`. */
   url?: string;
+  /** Links to the pod's other frontends by name, each `{{ urls.<name> }}`
+   *  and a row of its own on the person's job card. */
+  links?: Record<string, string>;
   /** A trial's pod: the workspace of its own it is under, named after
    *  the job, whose images `release` deletes (`trialWorkspace`). */
   own?: string;
@@ -120,6 +127,7 @@ export async function held(ctx: Ctx, id?: string): Promise<Held | undefined> {
     pod: h.id,
     workspace: h.note ?? "",
     ...(h.url ? { url: h.url } : {}),
+    ...(h.links && Object.keys(h.links).length ? { links: h.links } : {}),
     ...(typeof own === "string" && own === job ? { own } : {}),
   };
 }
@@ -147,8 +155,9 @@ export async function pod(ctx: Ctx): Promise<Held> {
   return h;
 }
 
-/** Records the job's hold on its pod: `{ pod, workspace }` and a link to
- *  its app for the job's checks. Never a secret: the agent can read holds. */
+/** Records the job's hold on its pod: `{ pod, workspace }`, a link to its
+ *  app for the job's checks, and links to its other frontends by name.
+ *  Never a secret: the agent can read holds. */
 export async function hold(ctx: Ctx, h: Held): Promise<void> {
   const { job, jobs } = jobsOf(ctx);
   await jobs.hold(job, {
@@ -157,6 +166,7 @@ export async function hold(ctx: Ctx, h: Held): Promise<void> {
     release: { type: RELEASE, input: { pod: h.pod, ...(h.own ? { own: h.own } : {}) } },
     note: h.workspace,
     ...(h.url ? { url: h.url } : {}),
+    ...(h.links && Object.keys(h.links).length ? { links: h.links } : {}),
   });
 }
 

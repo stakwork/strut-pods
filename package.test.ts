@@ -204,6 +204,13 @@ async function pods(dir: string, cainfo: string): Promise<Pods> {
       list.push(b);
       return json(res, 202, { image: b.image, state: b.state });
     }
+    const link = /^\/pods\/([^/]+)\/links$/.exec(path);
+    if (req.method === "POST" && link) {
+      if (![...byJob.values()].some((x) => x.pod === link[1])) return json(res, 404, { error: "no such pod" });
+      const { port, path: at, minutes } = (await body(req)) as { port: number; path?: string; minutes?: number };
+      const ttl = (minutes ?? 10) * 60_000;
+      return json(res, 201, { url: `https://${link[1]}-${port}.pods.test/_pods/open/${randomBytes(4).toString("hex")}${at ?? ""}`, name: `${link[1]}-${port}.pods.test`, expires: Date.now() + ttl });
+    }
     const gone = /^\/pods\/([^/]+)$/.exec(path);
     if (req.method === "DELETE" && gone) {
       const job = [...byJob].find(([, x]) => x.pod === gone[1])?.[0];
@@ -1080,6 +1087,44 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     const run = await step("stadeum/pods/claim", { workspace: "shop" }, "ada", "TrialJob", TRIAL);
     assert.equal(run.status, "error");
     assert.match(JSON.stringify(run.error), /a trial's pod is under a workspace named after its job/);
+  });
+
+  it("url names a second frontend: a link of its own on the hold, and urls.pod stays the main one", async () => {
+    const job = "job-two-frontends";
+    const { pod } = await claim("shop", "ada", job);
+    // The hold as strut keeps it, and the job's urls. A strut with a hold's
+    // links (stakwork/strut#859) also folds them into urls by name; any
+    // strut keeps them on the hold.
+    const job_ = async () => {
+      const res = await strut.app.request(`/jobs/${job}`, { headers: { "x-strut-actor": "ada" } });
+      const v = (await res.json()) as { holds: Array<{ kind: string; url?: string; links?: Record<string, string> }>; urls: Record<string, string> };
+      return { hold: v.holds.find((h) => h.kind === "pod"), urls: v.urls };
+    };
+    const url = async (config: Record<string, unknown>) => {
+      const run = await step("stadeum/pods/url", config, "ada", job);
+      assert.equal(run.status, "success", JSON.stringify(run.error));
+      return run.out as { url: string };
+    };
+    const at = (port: number) => new RegExp(`^https://${pod}-${port}\\.pods\\.test/`);
+    await url({ port: 3000 });
+    assert.match((await url({ port: 5173, name: "admin" })).url, at(5173));
+    let now = await job_();
+    assert.match(now.hold?.url ?? "", at(3000), "the main frontend stays the hold's url");
+    assert.deepEqual(Object.keys(now.hold?.links ?? {}), ["admin"]);
+    assert.match(now.hold!.links!["admin"]!, at(5173));
+    assert.match(now.urls["pod"]!, at(3000), "and urls.pod");
+    if ("admin" in now.urls) assert.equal(now.urls["admin"], now.hold!.links!["admin"]);
+    await url({ port: 3001 });
+    now = await job_();
+    assert.match(now.hold?.url ?? "", at(3001), "an unnamed link moves the main one");
+    assert.match(now.hold?.links?.["admin"] ?? "", at(5173), "and keeps the named ones");
+    for (const name of ["pod", "Admin", "a b", "-x"]) {
+      assert.equal((await step("stadeum/pods/url", { port: 4000, name }, "ada", job)).status, "error", name);
+    }
+    await step("stadeum/pods/release", {}, "ada", job);
+    now = await job_();
+    assert.equal(now.hold, undefined, "the links go with the pod");
+    assert.deepEqual(now.urls, {});
   });
 
   it("never puts a token in a run's record or a log", () => {

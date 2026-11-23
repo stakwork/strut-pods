@@ -33,7 +33,10 @@ pod. Your own `bash` and editor act on strut's disk, never on the pod.
 3. **Look at it.** `url` with the app's port gives a link. Open that link
    (never the bare `<pod>-<port>` name, which needs the link's cookie)
    with `browser/verify` or `browser/walkthrough`, or give it to the person,
-   who can watch it change as you work. Log in as the test user and open
+   who can watch it change as you work. The person's job card shows the
+   main frontend as Open pod. A workspace with another frontend (an admin
+   app, docs) gets `url` with a `name` for it, `name: "admin"`, and the
+   card shows it as Open admin too. Log in as the test user and open
    the pages that matter. A page that answers isn't proof that it works.
 4. **Push** the work on a branch and open a PR with `git`
    (`push -u origin <branch>` with `pr`).
