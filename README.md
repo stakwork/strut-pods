@@ -13,13 +13,23 @@ and a link to see it.
 | `bake { status?, page?, edits? }` | The workspace's next image, from the pod. With `page` or `edits`, the workspace's page, once this pod's image is ready |
 | `release { pod? }` | Destroys the pod. Strut runs it too when the job is deleted or swept. A trial's pod takes its images with it |
 
-One more step is a CHECK on a claim, never an agent's tool:
-`stadeum/pods/baked` answers whether the work's job baked a ready image of
-its workspace from its pod, asked of the service. `Pod Setup`'s first claim
-names it, so strut judges "it bakes" by what the service says, never by
-the agent's word. Strut hands a check the work's job and runs it before it
-closes a trial's job, so the pod and its images are still there. With no
-job, or a job that holds no pod, it fails and strut records no verdict.
+Two more steps are CHECKS on claims, never an agent's tools. `Pod Setup`'s
+claims name them, so strut judges those claims by what the world says,
+never by the agent's word:
+
+- `stadeum/pods/baked` answers whether the work's job baked a ready image
+  of its workspace from its pod, asked of the service.
+- `stadeum/pods/pushed` answers whether the work pushed `.pod/` on a branch
+  with a pull request. It finds the branches in the pod whose commits
+  change `.pod/`, then looks where the push went. In a trial, that's the
+  held push in the job's files, which must name the branch, a pull request
+  and the branch's last commit to `.pod/`. Otherwise it's GitHub, which must
+  have an open pull request from the branch that has that commit.
+
+Strut hands a check the work's job and runs it before it closes a trial's
+job, so the pod and its images are still there. With no job, a job that
+holds no pod, or nothing to ask (an origin not on GitHub, a repository
+GitHub won't show), a check fails and strut records no verdict.
 
 Each step is a few HTTP calls to the service, at `PODS_URL` with the box's
 tenant token in `PODS_TOKEN`. The steps find the job's pod in its hold,

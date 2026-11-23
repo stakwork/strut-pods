@@ -452,12 +452,16 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
 
   const TODAY = /^A bare pod: no image of this workspace yet\. Clone its repositories with git/;
 
-  it("Pod Setup's first claim is judged by the pods service, through the baked check", async () => {
+  it("Pod Setup's claims about the world are judged by the package's checks: the bake by the service, the push by where it went", async () => {
     const claims = await strut.claims.claimsFor({ kind: "concept", name: "Pod Setup" });
-    const bakes = claims.find((c: any) => c.claim_text.startsWith("The work leaves a ready image"));
-    assert.ok(bakes, JSON.stringify(claims.map((c: any) => c.claim_text)));
-    assert.equal(bakes.speaker_name, "stadeum/pods");
-    assert.deepEqual((await strut.claims.checksFor(bakes.id)).map((k: any) => k.step_type), ["stadeum/pods/baked"]);
+    const checked = async (start: string) => {
+      const claim = claims.find((c: any) => c.claim_text.startsWith(start));
+      assert.ok(claim, JSON.stringify(claims.map((c: any) => c.claim_text)));
+      assert.equal(claim.speaker_name, "stadeum/pods");
+      return (await strut.claims.checksFor(claim.id)).map((k: any) => k.step_type);
+    };
+    assert.deepEqual(await checked("The work leaves a ready image"), ["stadeum/pods/baked"]);
+    assert.deepEqual(await checked("`.pod/` is committed to a branch"), ["stadeum/pods/pushed"]);
   });
 
   it("claims as today on a box without stadeum/code: no repositories, nothing run in the pod", async () => {
@@ -797,6 +801,57 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     r = await check("job-nobody");
     assert.equal(r.status, "error");
     assert.match(JSON.stringify(r.error), /holds no pod/);
+  });
+
+  it("the pushed check finds the branch that changes .pod/ and asks where its push went: a trial's held push, or GitHub", async () => {
+    const name = `test/s${++n}`;
+    await strut.workspace.publishWorkflowByContent(name, "steps:\n  - id: s\n    type: stadeum/pods/pushed\n");
+    const check = async (job: string) => {
+      const run = (await strut.run(name, { job }, { actor: "ada", principal: "ada" })) as { status: string; output: any; error?: unknown };
+      return { status: run.status, error: run.error, out: run.output?.s ?? run.output };
+    };
+    const last = () => git(join(service.workspaces(trialPod), "web"), "log", "-1", "--format=%H", "pod-setup", "--", ".pod").slice(0, 7);
+    const yes = (c: string) => ({
+      supports: true,
+      content: `web's branch pod-setup, with the last commit to .pod/ (${c}), was pushed with the pull request "Run shop in a pod" into the default branch. Held, as a trial's push is: it is held push web.md in the job's files.`,
+    });
+
+    // The trial's push of pod-setup (held, above) carries its .pod/.
+    let r = await check(sample);
+    assert.equal(r.status, "success", JSON.stringify(r.error));
+    assert.deepEqual(r.out, yes(last()));
+    // .pod/ changed after the push: not pushed, until it is again.
+    const more = await inTrial("stadeum/pods/bash", {
+      command: "echo 'x: 1' >> .pod/compose.yml && git add .pod && git -c user.email=t@t -c user.name=t commit -q -m 'More .pod'",
+      cwd: "web",
+    });
+    assert.equal(more.status, "success", JSON.stringify(more.error));
+    r = await check(sample);
+    assert.deepEqual(r.out, { supports: false, content: `The push of web's branch pod-setup doesn't carry the last commit to .pod/ (${last()}): it was committed after the push.` });
+    await inTrial("stadeum/pods/git", { args: "push -u origin pod-setup", repo: "web", pr: { title: "Run shop in a pod" } });
+    assert.deepEqual((await check(sample)).out, yes(last()));
+
+    // A job that holds no pod: nothing to look at, so no verdict.
+    r = await check("job-nobody");
+    assert.equal(r.status, "error");
+    assert.match(JSON.stringify(r.error), /holds no pod/);
+
+    // Not a trial: shop's pod. Nothing changes .pod/ yet.
+    r = await check("job-shop");
+    assert.equal(r.status, "success", JSON.stringify(r.error));
+    assert.deepEqual(r.out, { supports: false, content: "No branch in the pod's repositories changes .pod/ past its default branch: .pod/ was never committed." });
+    // Then a branch does, and its push is asked of GitHub, where this package
+    // opens pull requests. The forge here isn't GitHub: no verdict.
+    const made = await step(
+      "stadeum/pods/bash",
+      { command: "git checkout -q -b pod-setup && mkdir -p .pod && echo 'services: {}' > .pod/compose.yml && git add .pod && git -c user.email=t@t -c user.name=t commit -q -m 'Add .pod'", cwd: "web" },
+      "ada",
+      "job-shop",
+    );
+    assert.equal(made.status, "success", JSON.stringify(made.error));
+    r = await check("job-shop");
+    assert.equal(r.status, "error");
+    assert.match(JSON.stringify(r.error), /can't tell\. web's origin isn't on GitHub, where this package opens pull requests\./);
   });
 
   it("closing a trial's job releases its pod and deletes its own workspace's images; shop's image and page stay", async () => {

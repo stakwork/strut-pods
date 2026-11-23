@@ -1,5 +1,5 @@
 import { z, defineStep } from "strut";
-import { gitAuth, httpsHost, jobFile, pod, run, shown, signIn, type Ctx } from "./_pods.js";
+import { gitAuth, githubHeaders, githubRepo, httpsHost, jobFile, openPull, pod, run, shown, signIn, type Ctx } from "./_pods.js";
 
 /** The first https address among git's arguments (`clone <url>`,
  *  `fetch <url>`), its quotes dropped. */
@@ -9,12 +9,6 @@ const urlIn = (args: string) => args.split(/\s+/).map((w) => w.replace(/^['"]|['
 async function origin(c: Ctx, p: string, cwd: string): Promise<string | undefined> {
   const r = await run(c, p, "git remote get-url origin", { cwd, timeoutSeconds: 30 });
   return r.exit_code === 0 ? r.output.trim() || undefined : undefined;
-}
-
-/** `owner/repo` of a GitHub remote, https or ssh. */
-function githubRepo(remote: string): { owner: string; repo: string } | undefined {
-  const m = /github\.com[/:]([A-Za-z0-9][A-Za-z0-9._-]*)\/([A-Za-z0-9][A-Za-z0-9._-]*?)(?:\.git)?\/?$/.exec(remote.trim());
-  return m ? { owner: m[1]!, repo: m[2]! } : undefined;
 }
 
 /** git's subcommand: the first word after its own options (`-C <path>`, `-c <name=value>`). */
@@ -88,14 +82,11 @@ async function openPr(
   where: { owner: string; repo: string; head: string; base: string },
   pr: { title: string; body?: string; draft?: boolean },
 ): Promise<Pr> {
-  const api = `https://api.github.com/repos/${where.owner}/${where.repo}/pulls`;
-  const headers = { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "stadeum-pods" };
-  const open = await c.services.http(`${api}?state=open&per_page=1&head=${encodeURIComponent(`${where.owner}:${where.head}`)}`, { headers, timeout: 30_000 });
-  const found = Array.isArray(open.body) ? (open.body[0] as { html_url: string; number: number } | undefined) : undefined;
-  if (found) return { url: found.html_url, number: found.number, created: false };
-  const made = await c.services.http(api, {
+  const found = await openPull(c, token, where).catch(() => undefined);
+  if (found) return { url: found.url, number: found.number, created: false };
+  const made = await c.services.http(`https://api.github.com/repos/${where.owner}/${where.repo}/pulls`, {
     method: "POST",
-    headers,
+    headers: githubHeaders(token),
     body: { title: pr.title, head: where.head, base: where.base, ...(pr.body ? { body: pr.body } : {}), ...(pr.draft ? { draft: true } : {}) },
     timeout: 30_000,
   });

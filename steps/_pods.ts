@@ -311,6 +311,35 @@ export function signIn(ctx: Ctx, url: string, auth: GitAuth, output: string): st
   return `${url} asks for a sign-in (it is private, or not there), and no account on ${auth.host} is connected for ${who}: connect one, then try again.`;
 }
 
+// ── GitHub's pull requests ────────────────────────────────────────────────
+
+/** `owner/repo` of a GitHub remote, https or ssh. */
+export function githubRepo(remote: string): { owner: string; repo: string } | undefined {
+  const m = /github\.com[/:]([A-Za-z0-9][A-Za-z0-9._-]*)\/([A-Za-z0-9][A-Za-z0-9._-]*?)(?:\.git)?\/?$/.exec(remote.trim());
+  return m ? { owner: m[1]!, repo: m[2]! } : undefined;
+}
+
+export const githubHeaders = (token: string | undefined): Record<string, string> => ({
+  ...(token ? { authorization: `Bearer ${token}` } : {}),
+  accept: "application/vnd.github+json",
+  "user-agent": "stadeum-pods",
+});
+
+/** The open pull request from the branch `head`, as GitHub says: its
+ *  address, number and the commit its branch is at. Throws when GitHub
+ *  won't say (a private repository the token can't see). */
+export async function openPull(
+  c: Ctx,
+  token: string | undefined,
+  where: { owner: string; repo: string; head: string },
+): Promise<{ url: string; number: number; sha: string } | undefined> {
+  const api = `https://api.github.com/repos/${where.owner}/${where.repo}/pulls?state=open&per_page=1&head=${encodeURIComponent(`${where.owner}:${where.head}`)}`;
+  const r = await c.services.http(api, { headers: githubHeaders(token), timeout: 30_000 });
+  if (!r.ok || !Array.isArray(r.body)) throw new Error(`GitHub answered ${r.status} for ${where.owner}/${where.repo}'s pull requests`);
+  const p = r.body[0] as { html_url: string; number: number; head: { sha: string } } | undefined;
+  return p && { url: p.html_url, number: p.number, sha: p.head.sha };
+}
+
 // ── a workspace's repositories ────────────────────────────────────────────
 
 /** A repository of a workspace, as the graph holds it. */

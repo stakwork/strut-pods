@@ -9,7 +9,10 @@ claims:
       - { type: stadeum/pods/baked, name: a ready image from this job's pod }
   - text: From that image, a signed-out browser reaches the app, signs in as the test user and opens the pages a person would use, with no error page.
   - text: It asked the person for no secret and wrote none into a file.
-  - text: "`.pod/` is committed to a branch that the work pushes with a pull request, and the workspace's page draws each system and each connection between them, says how they fit together, and says how to run them."
+  - text: "`.pod/` is committed to a branch that the work pushes with a pull request."
+    checks:
+      - { type: stadeum/pods/pushed, name: the last commit to .pod/ on a pull request }
+  - text: The workspace's page draws each system and each connection between them, says how they fit together, and says how to run them.
 ---
 A workspace with no image yet: a bare pod, its repositories cloned, and
 nothing running. Set it up until a person can use it, then bake it. What
