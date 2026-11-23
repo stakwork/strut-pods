@@ -25,8 +25,10 @@ pod. Your own `bash` and editor act on strut's disk, never on the pod.
    up is `Pod Setup`'s, the page under this one, so open it. For a workspace the box doesn't know, `claim` brings no
    repositories: clone them with `git` (`clone <url>`, into
    `/workspaces`), and set it up the same way.
-2. **Work.** Change the code, then `pod up` or `pod restart <name>`, and
-   `pod status`. When something fails, read `pod logs <name> -n 100`.
+2. **Work.** Change the code or `.pod/`, then `pod up` or
+   `pod restart <name>`, and `pod status`. `pod up` starts afresh an app
+   whose definition in `pm2.config.js` changed, so it needs no
+   `pm2 delete`. When something fails, read `pod logs <name> -n 100`.
    Each try takes seconds. `pod check` still passes when you're done.
 3. **Look at it.** `url` with the app's port gives a link. Open that link
    (never the bare `<pod>-<port>` name, which needs the link's cookie)
@@ -74,8 +76,16 @@ file.
   secret's value into a file.
 - **Anything that never exits goes in `pm2.config.js`,** never in `bash`,
   whose command is killed when it ends or times out.
+- **pm2 runs a Node script through a wrapper of its own,** so the script
+  isn't `process.argv[1]`. A server that starts only when it's the main
+  module, by comparing `process.argv[1]` with its own file or by
+  `import.meta.main`, loads under pm2 and never listens
+  (`require.main === module` still works). Have pm2 run `node` itself:
+  `script: "node"`, `args: "<file>"`, `interpreter: "none"`.
 - **Bind wherever the app likes.** Requests reach it as `localhost:<port>`,
-  so dev servers' host checks pass with no setting.
+  with no `X-Forwarded-*` headers, so dev servers' host checks and
+  frameworks' origin checks (Next's Server Actions, CSRF) pass with no
+  setting and no proxy of your own.
 - **An address the browser uses** (a frontend calling an API on another
   port, file URLs from a storage stub, a login server's redirects) is the
   port's public address, never `localhost`. Every command and `pod up` get
