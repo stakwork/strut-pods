@@ -1,6 +1,6 @@
 ---
 name: Pod
-description: Get a repository's app running in a pod, a machine of the job's own, then change it, see it in a browser, and bake what works so the next job starts in seconds.
+description: Work in a workspace's pod, a machine of the job's own, started from the workspace's image with its app running, then change it, see it in a browser, and bake what changed so the next job starts from it. A workspace with no image yet is set up first (`Pod Setup`).
 parents:
   - Job
 ---
@@ -16,51 +16,31 @@ pod. Your own `bash` and editor act on strut's disk, never on the pod.
 
 1. **Claim** the pod with the workspace, usually the main repository's
    name. A workspace the box keeps comes with its repositories at
-   `/workspaces/<name>`, the main one first: `claim` clones them into a
-   bare pod and fetches them in a pod from an image. Its answer says, for
-   each one, what it did, or why it couldn't (pass that on to the
-   person). With an image, the stack is already running: run `git pull`
-   with `git`, then `pod up` with `bash`. A bare pod has no stack yet:
-   run `pod survey`, and write `.pod/` in the main repository. For a
-   workspace the box doesn't know, `claim` brings no repositories: clone
-   them with `git` (`clone <url>`, into `/workspaces`).
-2. **Bring it up.** `pod up`, then `pod status`. When something fails,
-   read `pod logs <name> -n 100`, fix the config, and `pod restart <name>`
-   or `pod up` again. Each try takes seconds. Keep going until
-   `pod check` passes.
+   `/workspaces/<name>`, the main one first: `claim` fetches them in a
+   pod from an image. Its answer says, for each one, what it did, or why
+   it couldn't (pass that on to the person). With an image, the stack is
+   already running: run `git pull` with `git`, then `pod up` with `bash`.
+   A workspace with no image yet comes as a bare pod, with nothing
+   running: setting it up is `Pod Setup`'s, the page under this one, so
+   open it. For a workspace the box doesn't know, `claim` brings no
+   repositories: clone them with `git` (`clone <url>`, into
+   `/workspaces`), and set it up the same way.
+2. **Work.** Change the code, then `pod up` or `pod restart <name>`, and
+   `pod status`. When something fails, read `pod logs <name> -n 100`.
+   Each try takes seconds. `pod check` still passes when you're done.
 3. **Look at it.** `url` with the app's port gives a link. Open that link
    (never the bare `<pod>-<port>` name, which needs the link's cookie)
    with `browser/verify` or `browser/walkthrough`, or give it to the person,
    who can watch it change as you work. Log in as the test user and open
    the pages that matter. A page that answers isn't proof that it works.
-4. **Write `.pod/check.sh`** from what you checked in the browser, so
-   `pod check` proves it next time. It runs in every bake, so what it
-   leaves behind is baked: make it safe to run again and leave the app as
-   a person would find it (a mock sign-in that seeds a user must work a
-   second time).
-5. **Bake** once `pod check` passes and the app looks right. Commit
-   `.pod/` and open a PR with `git` (`push -u origin <branch>` with `pr`),
-   so later bakes from the base branch have it.
-6. **Remember.** The workspace's page, `<workspace> workspace`
-   (`hive workspace`), is what a person or the next job most needs: how
-   its systems fit together, and what to set up to run them. The bake writes
-   it, because that is when it's proven: `pod check` passed in the build.
-   Once the image is ready, pass the page to `bake` with `status: true`:
-   `page`, its whole text, the first time; after that, `edits` to the page
-   as you read it. It holds, in this order:
-   - a diagram of the workspace's systems, in a `mermaid` block. Each
-     arrow is a real connection (an HTTP route, a queue, a webhook, a
-     shared database), labelled with the setting that points it, so every
-     arrow is something the setup wired;
-   - the system in words: how the parts fit together;
-   - how to run it: the services and ports, the test user, and what broke
-     and how it was fixed.
-
-   It sits under this page, and under `Codebase` when the box has one. A
-   pod released without a bake leaves no page. The workspace holds its
-   repositories; for one the box doesn't know, list them on the page too,
-   the main one first. An old `<workspace> pod` page goes once the page is
-   written: read it first and fold in what still holds.
+4. **Push** the work on a branch and open a PR with `git`
+   (`push -u origin <branch>` with `pr`).
+5. **Bake again** when the setup changed: `.pod/`, a new service, a new
+   connection between the systems. Once the image is ready, pass `bake`
+   (`status: true`) `edits` to the workspace's page, `<workspace>
+   workspace`, for what changed in how its systems connect or run
+   (`Pod Setup` says what the page holds), and update
+   `.pod/check.sh` when what proves the app works changed.
 
 ## `.pod/`
 

@@ -614,6 +614,10 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
   it("writes the workspace's page only once this pod's bake is ready, under Pod, and deletes the old page", async () => {
     const podPage = await concept("Pod");
     assert.ok(podPage, "the package's Pod page");
+    // Setting a workspace up, the kind of work under it.
+    const setup = await concept("Pod Setup");
+    assert.ok(setup, "the package's Pod Setup page");
+    assert.deepEqual(await parentsOf(setup.ref_id), ["Pod"]);
     // What jobs kept before: `shop pod`, under Pod.
     const old = await node("Concept", { name: "shop pod", description: "Running shop.", docs: "web on 5173." });
     await step("graph/create-triplet", { source_ref_id: podPage.ref_id, target_ref_id: old, edge_type: "PARENT_OF" }, "root", `graph-${++n}`);
@@ -737,6 +741,31 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     assert.equal(after[0]!.ref_id, live.ref_id);
     assert.equal(after[0]!.properties["docs"], live0);
     assert.deepEqual(await named("Concept", `${sample} workspace`), []);
+  });
+
+  it("a trial's git sends no push and opens no pull request: what they would send goes to its job's files", async () => {
+    const made = await inTrial("stadeum/pods/bash", {
+      command: "git checkout -q -b pod-setup && mkdir -p .pod && echo 'services: {}' > .pod/compose.yml && git add .pod && git -c user.email=t@t -c user.name=t commit -q -m 'Add .pod'",
+      cwd: "web",
+    });
+    assert.equal(made.status, "success", JSON.stringify(made.error));
+    const before = execsOf(trialPod).length;
+    const out = (await inTrial("stadeum/pods/git", { args: "push -u origin pod-setup", repo: "web", pr: { title: "Run shop in a pod" } })).out;
+    assert.equal(out.held, true);
+    assert.equal(out.ok, true);
+    assert.equal(out.pr, undefined, "no pull request");
+    assert.match(out.output, /^held: this run is a strut trial, so this push and pull request were not sent\. What it would have sent is in this job's files as uploads\/held push web\.md\.$/);
+    assert.ok(!execsOf(trialPod).slice(before).some((e) => /\bpush\b/.test(e.cmd)), "git push never ran");
+    const { jobRoot } = await from<any>("jobs.ts");
+    const kept = await readFile(join(jobRoot(root, sample), "uploads", "held push web.md"), "utf8");
+    assert.match(kept, /- Branch: pod-setup/);
+    assert.match(kept, /- Pull request: "Run shop in a pod" into the default branch/);
+    assert.match(kept, /Add \.pod/);
+    assert.match(kept, /\.pod\/compose\.yml/);
+    // git that sends nothing still runs in a trial.
+    const status = (await inTrial("stadeum/pods/git", { args: "status --short", repo: "web" })).out;
+    assert.equal(status.held, undefined);
+    assert.equal(status.ok, true, status.output);
   });
 
   it("closing a trial's job releases its pod and deletes its own workspace's images; shop's image and page stay", async () => {

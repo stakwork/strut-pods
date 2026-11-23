@@ -324,7 +324,7 @@ export const FOLDER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
 /** One of strut's own steps, run with this step's context so its rules
  *  hold as for any other caller. Undefined when this strut has none. */
-async function strutStep<T>(ctx: Ctx, type: string, config: Record<string, unknown>): Promise<T | undefined> {
+export async function strutStep<T>(ctx: Ctx, type: string, config: Record<string, unknown>): Promise<T | undefined> {
   const def = ctx.registry?.[type];
   return def ? ((await def.run(def.input.parse(config), ctx)) as T) : undefined;
 }

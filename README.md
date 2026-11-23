@@ -16,7 +16,9 @@ and a link to see it.
 Each step is a few HTTP calls to the service, at `PODS_URL` with the box's
 tenant token in `PODS_TOKEN`. The steps find the job's pod in its hold,
 `{ pod, workspace }`, so the model never copies a pod's name, and the hold
-holds no secret. `concepts/Pod.md` is the page on how to work in a pod.
+holds no secret. `concepts/Pod.md` is the page on how to work in a pod, and
+`concepts/Pod Setup.md`, under it, on setting up a workspace that has no
+image yet, up to the bake and the workspace's page.
 
 **A workspace's repositories** are read from strut's graph, as the
 `stadeum/code` package keeps them (its `Repositories` page has the
@@ -58,12 +60,14 @@ closed once it is judged. So in a trial:
   The hold's release records that workspace, so it's read from the hold,
   never from what an agent passes. Until the images are gone (a bake still
   building), the hold stays and strut tries again.
+- `git` sends no push and opens no pull request. It answers `held`, and
+  what they would have sent (the branch, its commits with their files,
+  the pull request) goes to a file of the job, `uploads/held push
+  <repo>.md`, where the trial's judge reads it.
 
 What a sample leaves: its runs and their verdicts, its agent's session and
 the `StrutJob` node (strut keeps both for every deleted job), the
 service's rows of its gone pods, and on Lambda its image's log group.
-What it pushes is not held: a branch or pull request the `git` tool made
-stays on the forge.
 
 **Git tokens are the person's, by host.** `requires: { git: true }` lets
 the steps read the run's token for a repository's host,
