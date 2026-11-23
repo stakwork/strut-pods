@@ -1,7 +1,7 @@
-# package/
+# stadeum/pods
 
-`stadeum/pods`, the strut package (PLAN.md §8). It gives strut's job agent
-a pod: a machine of the job's own, through the pods service.
+A cloud machine for each coding job: your repos cloned, your app running,
+and a link to see it.
 
 | Tool | Does |
 | --- | --- |

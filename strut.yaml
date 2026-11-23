@@ -1,6 +1,6 @@
 package: stadeum/pods
-version: 0.3.0
-description: A machine of its own for every coding job, with the workspace's repositories cloned and the app running, served over HTTPS (PLAN.md §8).
+version: 0.3.1
+description: A cloud machine for each coding job, with your repos cloned and your app running, so agents can run and test it.
 job:
   tools: [claim, bash, edit, git, url, bake, release]
 requires:
