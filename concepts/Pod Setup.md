@@ -5,6 +5,8 @@ parents:
   - Pod
 claims:
   - text: The work leaves a ready image of the workspace, baked by this work.
+    checks:
+      - { type: stadeum/pods/baked, name: a ready image from this job's pod }
   - text: From that image, a signed-out browser reaches the app, signs in as the test user and opens the pages a person would use, with no error page.
   - text: It asked the person for no secret and wrote none into a file.
   - text: "`.pod/` is committed to a branch that the work pushes with a pull request, and the workspace's page draws each system and each connection between them, says how they fit together, and says how to run them."

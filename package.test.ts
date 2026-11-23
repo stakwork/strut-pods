@@ -452,6 +452,14 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
 
   const TODAY = /^A bare pod: no image of this workspace yet\. Clone its repositories with git/;
 
+  it("Pod Setup's first claim is judged by the pods service, through the baked check", async () => {
+    const claims = await strut.claims.claimsFor({ kind: "concept", name: "Pod Setup" });
+    const bakes = claims.find((c: any) => c.claim_text.startsWith("The work leaves a ready image"));
+    assert.ok(bakes, JSON.stringify(claims.map((c: any) => c.claim_text)));
+    assert.equal(bakes.speaker_name, "stadeum/pods");
+    assert.deepEqual((await strut.claims.checksFor(bakes.id)).map((k: any) => k.step_type), ["stadeum/pods/baked"]);
+  });
+
   it("claims as today on a box without stadeum/code: no repositories, nothing run in the pod", async () => {
     const out = await claim("hive", "ada", "job-no-code");
     assert.equal(out.image, null);
@@ -766,6 +774,28 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     const status = (await inTrial("stadeum/pods/git", { args: "status --short", repo: "web" })).out;
     assert.equal(status.held, undefined);
     assert.equal(status.ok, true, status.output);
+  });
+
+  it("the baked check answers from the pods service: a ready image from the job's pod, or why not", async () => {
+    // As strut runs a check on a claim: a run whose input carries the work's job.
+    const name = `test/s${++n}`;
+    await strut.workspace.publishWorkflowByContent(name, "steps:\n  - id: s\n    type: stadeum/pods/baked\n");
+    const check = async (job: string) => {
+      const run = (await strut.run(name, { job }, { actor: "root", principal: "root" })) as { status: string; output: any; error?: unknown };
+      return { status: run.status, error: run.error, out: run.output?.s ?? run.output };
+    };
+    let r = await check(sample);
+    assert.equal(r.status, "success", JSON.stringify(r.error));
+    assert.deepEqual(r.out, { supports: true, content: `Image 1 of shop, baked from this job's pod ${trialPod}, is ready.` });
+    // Still building when the work ended: no.
+    service.bakes.get(sample)![0]!.state = "building";
+    r = await check(sample);
+    assert.deepEqual(r.out, { supports: false, content: `Image 1 of shop, baked from this job's pod ${trialPod}, is building.` });
+    service.bakes.get(sample)![0]!.state = "ready";
+    // A job that holds no pod: nothing to look at, so no verdict.
+    r = await check("job-nobody");
+    assert.equal(r.status, "error");
+    assert.match(JSON.stringify(r.error), /holds no pod/);
   });
 
   it("closing a trial's job releases its pod and deletes its own workspace's images; shop's image and page stay", async () => {

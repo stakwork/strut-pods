@@ -13,6 +13,14 @@ and a link to see it.
 | `bake { status?, page?, edits? }` | The workspace's next image, from the pod. With `page` or `edits`, the workspace's page, once this pod's image is ready |
 | `release { pod? }` | Destroys the pod. Strut runs it too when the job is deleted or swept. A trial's pod takes its images with it |
 
+One more step is a CHECK on a claim, never an agent's tool:
+`stadeum/pods/baked` answers whether the work's job baked a ready image of
+its workspace from its pod, asked of the service. `Pod Setup`'s first claim
+names it, so strut judges "it bakes" by what the service says, never by
+the agent's word. Strut hands a check the work's job and runs it before it
+closes a trial's job, so the pod and its images are still there. With no
+job, or a job that holds no pod, it fails and strut records no verdict.
+
 Each step is a few HTTP calls to the service, at `PODS_URL` with the box's
 tenant token in `PODS_TOKEN`. The steps find the job's pod in its hold,
 `{ pod, workspace }`, so the model never copies a pod's name, and the hold
