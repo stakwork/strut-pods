@@ -36,7 +36,8 @@ export default defineStep({
       const r = await must<{ image: number }>(c, "starting a bake", "POST", `/pods/${encodeURIComponent(h.pod)}/bake`);
       started = r.image;
     }
-    const all = await must<Image[]>(c, "the workspace's images", "GET", `/workspaces/${encodeURIComponent(h.workspace)}/images`);
+    // A trial's pod bakes under the workspace of its own (claim).
+    const all = await must<Image[]>(c, "the workspace's images", "GET", `/workspaces/${encodeURIComponent(h.own ?? h.workspace)}/images`);
     const images = all.slice(0, 5).map((i) => ({
       image: i.image,
       state: i.state,

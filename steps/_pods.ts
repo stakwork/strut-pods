@@ -19,6 +19,9 @@ interface StepDef {
 
 export interface Ctx {
   job?: string;
+  /** Set when the run is a strut TRIAL (strut's `RunTrial`): nothing it
+   *  starts may outlast it, so its pod gets a workspace of its own. */
+  trial?: { case: string; claims: string[] };
   /** The run's person: whose tokens `secrets.git` reads. */
   actor?: string;
   principal?: string;
@@ -33,7 +36,9 @@ export interface Ctx {
     jobs?: {
       hold(job: string, hold: { id: string; kind: string; release: { type: string; input: unknown }; note?: string; url?: string }): Promise<void>;
       release(job: string, id: string): Promise<void>;
-      holds(job: string): Promise<Array<{ id: string; kind: string; note?: string; url?: string }>>;
+      holds(job: string): Promise<Array<{ id: string; kind: string; note?: string; url?: string; release?: { type: string; input: unknown } }>>;
+      /** One file of the job's directory, as strut's `job/read` reads it. */
+      read?(job: string, path: string, opts?: { maxChars?: number }): Promise<{ text?: string } | null>;
     };
   };
 }
@@ -72,10 +77,17 @@ export async function must<T = unknown>(ctx: Ctx, what: string, method: string, 
   return r.body as T;
 }
 
+/** A workspace's name, as the service takes it. */
+export const WORKSPACE = /^[a-z0-9][a-z0-9._-]{0,62}$/;
+
 export interface Held {
   pod: string;
+  /** The workspace the pod is for: its repositories and its page. */
   workspace: string;
   url?: string;
+  /** A trial's pod: the workspace of its own it is under, named after
+   *  the job, whose images `release` deletes (`trialWorkspace`). */
+  own?: string;
 }
 
 function jobsOf(ctx: Ctx) {
@@ -84,11 +96,36 @@ function jobsOf(ctx: Ctx) {
   return { job: ctx.job, jobs };
 }
 
-/** The job's pod, from its hold, or none. */
-export async function held(ctx: Ctx): Promise<Held | undefined> {
+/** The job's pod, or the pod `id` the job holds, from its hold, or none.
+ *  `own` is read from the hold's release, which only `hold` writes, never
+ *  from what an agent passes, and is only ever the job's own name. */
+export async function held(ctx: Ctx, id?: string): Promise<Held | undefined> {
   const { job, jobs } = jobsOf(ctx);
-  const h = (await jobs.holds(job)).find((x) => x.kind === KIND);
-  return h ? { pod: h.id, workspace: h.note ?? "", ...(h.url ? { url: h.url } : {}) } : undefined;
+  const h = (await jobs.holds(job)).find((x) => x.kind === KIND && (id === undefined || x.id === id));
+  if (!h) return undefined;
+  const own = (h.release?.input as { own?: unknown } | undefined)?.own;
+  return {
+    pod: h.id,
+    workspace: h.note ?? "",
+    ...(h.url ? { url: h.url } : {}),
+    ...(typeof own === "string" && own === job ? { own } : {}),
+  };
+}
+
+/**
+ * The workspace of a trial's own (strut's `ctx.trial`, whose contract is
+ * that nothing a trial starts leaves it): its job's id, which strut makes
+ * for each sample. A pod under it starts bare, never from the named
+ * workspace's image; its bakes go under it, never the named workspace's;
+ * and `release` deletes them once the job is closed. Undefined outside a
+ * trial.
+ */
+export function trialWorkspace(ctx: Ctx): string | undefined {
+  if (!ctx.trial) return undefined;
+  if (!ctx.job || !WORKSPACE.test(ctx.job)) {
+    throw new Error(`pods: a trial's pod is under a workspace named after its job, and ${JSON.stringify(ctx.job ?? "")} can't name one`);
+  }
+  return ctx.job;
 }
 
 /** The job's pod, or an error saying to claim one. */
@@ -105,7 +142,7 @@ export async function hold(ctx: Ctx, h: Held): Promise<void> {
   await jobs.hold(job, {
     id: h.pod,
     kind: KIND,
-    release: { type: RELEASE, input: { pod: h.pod } },
+    release: { type: RELEASE, input: { pod: h.pod, ...(h.own ? { own: h.own } : {}) } },
     note: h.workspace,
     ...(h.url ? { url: h.url } : {}),
   });
@@ -285,13 +322,16 @@ export interface Repository {
 /** A repository's folder under /workspaces: one plain name. */
 export const FOLDER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
-/** Strut's own `graph/<step>`, run with this step's context so its rules
- *  hold as for any other caller. Undefined when this strut has no graph. A
- *  graph step answers a failure as text. */
-async function graph<T>(ctx: Ctx, step: string, config: Record<string, unknown>): Promise<T | string | undefined> {
-  const def = ctx.registry?.[`graph/${step}`];
-  return def ? ((await def.run(def.input.parse(config), ctx)) as T | string) : undefined;
+/** One of strut's own steps, run with this step's context so its rules
+ *  hold as for any other caller. Undefined when this strut has none. */
+async function strutStep<T>(ctx: Ctx, type: string, config: Record<string, unknown>): Promise<T | undefined> {
+  const def = ctx.registry?.[type];
+  return def ? ((await def.run(def.input.parse(config), ctx)) as T) : undefined;
 }
+
+/** Strut's own `graph/<step>`. Undefined when this strut has no graph. A
+ *  graph step answers a failure as text. */
+const graph = <T>(ctx: Ctx, step: string, config: Record<string, unknown>) => strutStep<T | string>(ctx, `graph/${step}`, config);
 
 interface Found {
   ref_id: string;
@@ -379,7 +419,8 @@ async function concept(ctx: Ctx, name: string): Promise<Found | undefined> {
  * they connect, and how to run them. Only once this pod's newest image is
  * ready, because that is when the page is proven: `pod check` passed in the
  * build and on a machine started from the image. While it builds, or after
- * it failed, nothing is written.
+ * it failed, nothing is written. A trial's pod writes it to its job's files
+ * instead (`trialPage`).
  *
  * The page is changed in place, so its claims and history stay with it:
  * `page` is its first text, and `edits` change it after that (strut's
@@ -397,6 +438,13 @@ export async function writePage(ctx: Ctx, h: Held, images: Image[], change: Page
     return { name, state: "waiting", note: `Not written yet: image ${mine.image} is still building. Pass the page again with \`status: true\` once it's ready.` };
   }
   if (mine.state !== "ready") return not(`Image ${mine.image} ${mine.state}${mine.reason ? `: ${mine.reason}` : ""}. The page waits for a bake that's ready.`);
+  if (h.own) {
+    try {
+      return await trialPage(ctx, name, mine.image, change);
+    } catch (e) {
+      return not(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   let ref: string;
   try {
@@ -433,4 +481,52 @@ export async function writePage(ctx: Ctx, h: Held, images: Image[], change: Page
     said.push(`Then: ${e instanceof Error ? e.message : String(e)}`);
   }
   return { name, state: "written", note: said.join(" ") };
+}
+
+/** `edits` applied in order, each quoting text that occurs once, as
+ *  strut's `graph/edit-node` applies them; or what's wrong. */
+function edited(text: string, edits: Array<{ old: string; new: string }>): string | Error {
+  for (const [i, e] of edits.entries()) {
+    const at = text.indexOf(e.old);
+    if (!e.old || at === -1) return new Error(`edit ${i + 1}: no match for the text to replace: quote the page exactly`);
+    if (text.indexOf(e.old, at + 1) !== -1) return new Error(`edit ${i + 1}: the text to replace occurs more than once: quote more of it`);
+    text = text.slice(0, at) + e.new + text.slice(at + e.old.length);
+  }
+  return text;
+}
+
+/**
+ * A trial's page: what the bake would write, as a file of the trial's job,
+ * `uploads/<name>.md`, where strut's judge of the trial reads the work's
+ * files (`context/work-file`). Never the graph: a page written there and
+ * deleted after would leave a deleted Concept and its history, and stand
+ * under `Pod` while the trial runs. As on the graph, `page` is the first
+ * text and `edits` change it after that, the text being this job's file,
+ * or else the live page.
+ */
+async function trialPage(ctx: Ctx, name: string, image: number, change: PageChange): Promise<PageResult> {
+  const job = ctx.job!;
+  const path = `uploads/${name}.md`;
+  const file = await ctx.services.jobs?.read?.(job, path, { maxChars: 1_000_000 });
+  const base = file?.text ?? text((await concept(ctx, name))?.properties["docs"]);
+  let docs: string;
+  if (base && change.edits?.length) {
+    const out = edited(base, change.edits);
+    if (out instanceof Error) throw out;
+    docs = out;
+  } else if (base) {
+    throw new Error(`${name} has a page already: change it with \`edits\``);
+  } else if (change.page?.trim()) {
+    docs = change.page;
+  } else {
+    throw new Error(`${name} doesn't exist yet: pass \`page\`, its whole text.`);
+  }
+  if (file) await strutStep(ctx, "job/delete-upload", { job, path });
+  const saved = await strutStep<{ path: string }>(ctx, "job/upload", { job, name: `${name}.md`, mediaType: "text/markdown", data: Buffer.from(docs).toString("base64") });
+  if (!saved) throw new Error("this strut can't keep a file in a job");
+  return {
+    name,
+    state: "written",
+    note: `${name} is written, from image ${image}, to this trial's job as ${saved.path}, where the trial's judge reads it. A trial writes no page to the graph.`,
+  };
 }

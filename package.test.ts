@@ -11,7 +11,8 @@
  * Stand-ins, all on this machine, so nothing reaches a network:
  *
  * - the pods service: an HTTP server answering what the package calls
- *   (`POST /pods`, a bake and the images, podd's `exec` and `ready`). Its
+ *   (`POST /pods`, `DELETE /pods/:pod`, a bake, the images and deleting
+ *   them, podd's `exec` and `ready`). Its
  *   exec runs the command with bash in a folder that stands for the pod's
  *   `/workspaces`, and records what it was sent. A pod "from an image"
  *   starts with the image's folder copied in. A bake stays `building`
@@ -140,6 +141,10 @@ interface Pods {
   images: Map<string, { image: number; from: string }>;
   /** Each workspace's bakes, oldest first: a test moves one on by setting its state. */
   bakes: Map<string, Bake[]>;
+  /** Every claim it was sent, in order. */
+  claims: Array<{ workspace: string; job: string }>;
+  /** Each workspace whose images it was asked to delete, in order. */
+  deleted: string[];
   close(): Promise<void>;
 }
 
@@ -156,6 +161,8 @@ async function pods(dir: string, cainfo: string): Promise<Pods> {
   const execs: Exec[] = [];
   const images = new Map<string, { image: number; from: string }>();
   const bakes = new Map<string, Bake[]>();
+  const claims: Array<{ workspace: string; job: string }> = [];
+  const deleted: string[] = [];
   const runs =new Map<string, { output: string; done: boolean; code: number | null; signal: number | null; child: ChildProcess; waiters: Array<() => void> }>();
   const workspaces = (pod: string) => join(dir, pod, "workspaces");
   const body = async (req: IncomingMessage): Promise<any> => {
@@ -171,6 +178,7 @@ async function pods(dir: string, cainfo: string): Promise<Pods> {
     const path = url.pathname;
     if (req.method === "POST" && path === "/pods") {
       const { workspace, job } = await body(req);
+      claims.push({ workspace, job });
       let p = byJob.get(job);
       if (!p) {
         const image = images.get(workspace);
@@ -192,7 +200,22 @@ async function pods(dir: string, cainfo: string): Promise<Pods> {
       list.push(b);
       return json(res, 202, { image: b.image, state: b.state });
     }
+    const gone = /^\/pods\/([^/]+)$/.exec(path);
+    if (req.method === "DELETE" && gone) {
+      const job = [...byJob].find(([, x]) => x.pod === gone[1])?.[0];
+      if (job === undefined) return json(res, 404, { error: "no such pod" });
+      byJob.delete(job);
+      return json(res, 200, { pod: gone[1], state: "gone" });
+    }
     const listed = /^\/workspaces\/([^/]+)\/images$/.exec(path);
+    if (req.method === "DELETE" && listed) {
+      const workspace = decodeURIComponent(listed[1]!);
+      deleted.push(workspace);
+      const n = bakes.get(workspace)?.length ?? 0;
+      bakes.delete(workspace);
+      images.delete(workspace);
+      return json(res, 200, { workspace, deleted: n });
+    }
     if (req.method === "GET" && listed) {
       const list = [...(bakes.get(decodeURIComponent(listed[1]!)) ?? [])].reverse();
       const current = list.find((b) => b.state === "ready")?.image;
@@ -244,6 +267,8 @@ async function pods(dir: string, cainfo: string): Promise<Pods> {
     workspaces,
     images,
     bakes,
+    claims,
+    deleted,
     close: () => new Promise((ok) => server.close(() => ok())),
   };
 }
@@ -276,11 +301,11 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
   const console0 = { ...console };
   let n = 0;
 
-  /** One of the package's steps, run as a job's run runs it: as `actor`, under `job`. */
-  const step = async (type: string, config: Record<string, unknown>, actor: string, job: string) => {
+  /** One of the package's steps, run as a job's run runs it: as `actor`, under `job`, and in a trial with `trial`. */
+  const step = async (type: string, config: Record<string, unknown>, actor: string, job: string, trial?: { case: string; claims: string[] }) => {
     const name = `test/s${++n}`;
     await strut.workspace.publishWorkflowByContent(name, `steps:\n  - id: s\n    type: ${type}\n    config: ${JSON.stringify(config)}\n`);
-    const run = (await strut.run(name, {}, { actor, principal: actor, job })) as { status: string; output: any; error?: unknown };
+    const run = (await strut.run(name, {}, { actor, principal: actor, job, ...(trial ? { trial } : {}) })) as { status: string; output: any; error?: unknown };
     // A one-step run's output is its step's.
     return { status: run.status, error: run.error, out: run.output?.s ?? run.output };
   };
@@ -641,6 +666,120 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     latest().state = "ready";
     assert.equal((await bake({})).page, undefined);
     assert.equal((await concept("shop workspace"))!.properties["docs"], after.properties["docs"]);
+  });
+
+  // ── a strut trial ───────────────────────────────────────────────────────
+
+  /** A sample of a trial, as strut runs one: a job of its own, `trial-<batch>-<hex>`. */
+  const TRIAL = { case: "case-1", claims: ["claim-1"] };
+  const sample = `trial-t${randomBytes(5).toString("hex")}-${randomBytes(4).toString("hex")}`;
+  const inTrial = (type: string, config: Record<string, unknown>, job = sample) => step(type, config, "ada", job, TRIAL);
+  /** The sample's pod. */
+  let trialPod = "";
+  /** Every live node of a type, by name. */
+  const named = async (type: string, name: string) => {
+    const run = await step("graph/find", { node_type: type, where: { name }, limit: 5 }, "root", `graph-${++n}`);
+    assert.equal(run.status, "success", JSON.stringify(run.error));
+    return run.out.nodes as Array<{ ref_id: string; properties: Record<string, unknown> }>;
+  };
+
+  it("a trial's pod is for the workspace it names, under one of its own: bare, with the named one's repositories, and no Workspace made", async () => {
+    // shop has an image a job would start from.
+    service.images.set("shop", { image: 9, from: service.workspaces(shopPod) });
+    const out = (await inTrial("stadeum/pods/claim", { workspace: "shop" })).out;
+    trialPod = out.pod;
+    assert.equal(service.claims.at(-1)!.workspace, sample, "claimed under the job's own name");
+    assert.equal(out.image, null, "bare, never from shop's image");
+    assert.equal(out.workspace, "shop");
+    assert.deepEqual(
+      out.repositories.map((r: any) => [r.path, r.state]),
+      [["/workspaces/web", "cloned"], ["/workspaces/api", "cloned"]],
+    );
+    assert.match(out.note, new RegExp(`^A bare pod for shop: this run is a strut trial, so the pod is under a workspace of its own, ${sample}, never from shop's image`));
+    assert.deepEqual(await named("Workspace", sample), [], "no Workspace node");
+    // Claimed again: the same pod.
+    assert.equal((await inTrial("stadeum/pods/claim", { workspace: "shop" })).out.pod, out.pod);
+  });
+
+  it("a trial's bake builds under its own workspace and writes the page to its job's files, never to the graph", async () => {
+    const live = (await concept("shop workspace"))!;
+    const shopBakes = JSON.stringify(service.bakes.get("shop"));
+    let out = (await inTrial("stadeum/pods/bake", {})).out;
+    assert.equal(out.started, 1, "the own workspace's first image");
+    assert.equal(service.bakes.get(sample)!.length, 1);
+    assert.equal(JSON.stringify(service.bakes.get("shop")), shopBakes, "shop's images untouched");
+    service.bakes.get(sample)![0]!.state = "ready";
+
+    // shop's page exists: edits change it, as on the graph, here in a file.
+    const live0 = String(live.properties["docs"]);
+    out = (await inTrial("stadeum/pods/bake", { status: true, page: "Something else entirely." })).out;
+    assert.equal(out.page.state, "not written");
+    assert.match(out.page.note, /has a page already/);
+    out = (await inTrial("stadeum/pods/bake", { status: true, edits: [{ old: "web on 5173, api on 8000.", new: "web on 5173, api on 8000 (a trial's)." }] })).out;
+    assert.equal(out.page.state, "written", out.page.note);
+    assert.match(out.page.note, /to this trial's job as uploads\/shop workspace\.md/);
+    // Then edits change the trial's file, never the live page.
+    out = (await inTrial("stadeum/pods/bake", { status: true, edits: [{ old: "(a trial's)", new: "(a trial's, twice)" }] })).out;
+    assert.equal(out.page.state, "written", out.page.note);
+    const want = live0.replace("web on 5173, api on 8000.", "web on 5173, api on 8000 (a trial's, twice).");
+    const { jobRoot } = await from<any>("jobs.ts");
+    assert.equal(await readFile(join(jobRoot(root, sample), "uploads", "shop workspace.md"), "utf8"), want);
+    assert.deepEqual(await readdir(join(jobRoot(root, sample), "uploads")), ["shop workspace.md"], "one file, written over");
+
+    // The judge opens it among the work's files (strut's context/work-file).
+    const { workCapability } = await from<any>("work.ts");
+    const work = workCapability({ root: { workflow: "job", runId: "r" }, runs: [], concepts: [], files: { [`job-${sample}`]: jobRoot(root, sample) } });
+    assert.equal((await work.read(`job-${sample}/uploads/shop workspace.md`)).text, want);
+
+    // The graph: no page written, the live one as it was.
+    const after = await named("Concept", "shop workspace");
+    assert.equal(after.length, 1);
+    assert.equal(after[0]!.ref_id, live.ref_id);
+    assert.equal(after[0]!.properties["docs"], live0);
+    assert.deepEqual(await named("Concept", `${sample} workspace`), []);
+  });
+
+  it("closing a trial's job releases its pod and deletes its own workspace's images; shop's image and page stay", async () => {
+    const docs = (await concept("shop workspace"))!.properties["docs"];
+    const before = service.deleted.length;
+    // As strut closes a sample's job once it is judged: each hold's release step.
+    const res = await strut.app.request(`/jobs/${sample}`, { method: "DELETE", headers: { "x-strut-actor": "root" } });
+    const body = await res.json();
+    assert.equal(res.status, 200, JSON.stringify(body));
+    assert.deepEqual(body.released, [trialPod], "its pod");
+    assert.deepEqual(service.deleted.slice(before), [sample]);
+    assert.equal(service.bakes.get(sample), undefined, "its images are gone");
+    assert.equal(service.images.get("shop")?.image, 9, "shop's image stays");
+    assert.equal((await concept("shop workspace"))!.properties["docs"], docs, "shop's page stays");
+    const { jobRoot } = await from<any>("jobs.ts");
+    assert.ok(!(await exists(jobRoot(root, sample))), "the job's files went with it");
+  });
+
+  it("a trial's agent releasing its pod deletes the images too; a job's release deletes none", async () => {
+    const job = `trial-t${randomBytes(5).toString("hex")}-${randomBytes(4).toString("hex")}`;
+    await inTrial("stadeum/pods/claim", { workspace: "shop" }, job);
+    await inTrial("stadeum/pods/bake", {}, job);
+    service.bakes.get(job)![0]!.state = "ready";
+    const out = (await inTrial("stadeum/pods/release", {}, job)).out;
+    assert.equal(out.images, job);
+    assert.equal(service.deleted.at(-1), job);
+    assert.deepEqual((await inTrial("stadeum/pods/release", {}, job)).out, { pod: null, released: false }, "its hold is gone");
+
+    // Outside a trial: the pod goes, the workspace's images stay, whatever
+    // the input says.
+    const deleted = service.deleted.length;
+    const plain = await step("stadeum/pods/release", { own: "job-shop" }, "ada", "job-shop");
+    assert.equal(plain.status, "success", JSON.stringify(plain.error));
+    assert.equal(plain.out.images, undefined);
+    assert.equal(service.deleted.length, deleted);
+    assert.ok(service.bakes.get("shop")?.length, "shop's images stay");
+    service.images.delete("shop");
+  });
+
+  it("a trial whose job can't name a workspace says so", async () => {
+    const run = await step("stadeum/pods/claim", { workspace: "shop" }, "ada", "TrialJob", TRIAL);
+    assert.equal(run.status, "error");
+    assert.match(JSON.stringify(run.error), /a trial's pod is under a workspace named after its job/);
   });
 
   it("never puts a token in a run's record or a log", () => {

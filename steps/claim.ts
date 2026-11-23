@@ -1,5 +1,5 @@
 import { z, defineStep } from "strut";
-import { call, FOLDER, gitAuth, held, hold, problem, podd, quote, repositories, run, signIn, type Ctx, type Repository } from "./_pods.js";
+import { call, FOLDER, gitAuth, held, hold, problem, podd, quote, repositories, run, signIn, trialWorkspace, WORKSPACE, type Ctx, type Repository } from "./_pods.js";
 
 interface PodView {
   pod: string;
@@ -67,7 +67,7 @@ export default defineStep({
   input: z.object({
     workspace: z
       .string()
-      .regex(/^[a-z0-9][a-z0-9._-]{0,62}$/, "a workspace is lowercase letters, digits, '.', '_' and '-'")
+      .regex(WORKSPACE, "a workspace is lowercase letters, digits, '.', '_' and '-'")
       .describe("The workspace, usually the main repository's name: \"hive\""),
   }),
   output: z.object({
@@ -89,11 +89,19 @@ export default defineStep({
     if (mine && mine.workspace !== cfg.workspace) {
       throw new Error(`this job's pod ${mine.pod} is for the workspace ${mine.workspace}: release it first to claim another`);
     }
+    // A trial's pod is under a workspace of its own; the one named gives
+    // its repositories and its page.
+    const own = trialWorkspace(c);
     const repos = await repositories(c, cfg.workspace);
-    const r = await call(c, "POST", "/pods", { workspace: cfg.workspace, job: c.job }, 120_000);
+    const r = await call(c, "POST", "/pods", { workspace: own ?? cfg.workspace, job: c.job }, 120_000);
     if (!r.ok) throw problem("claiming a pod", r);
     const p = r.body as PodView;
-    if (!mine || mine.pod !== p.pod) await hold(c, { pod: p.pod, workspace: p.workspace });
+    if (!mine || mine.pod !== p.pod) {
+      // The service launches another only once the job's pod is gone: its
+      // hold goes, so the tools find this one.
+      if (mine) await c.services.jobs!.release(c.job!, mine.pod);
+      await hold(c, { pod: p.pod, workspace: cfg.workspace, ...(own ? { own } : {}) });
+    }
 
     const brought: Brought[] = [];
     const taken = new Set<string>();
@@ -107,14 +115,17 @@ export default defineStep({
     const body = (ready.body ?? {}) as { ready?: boolean; problems?: string[] };
     const isReady = ready.ok && body.ready !== false;
     const main = brought[0]?.path;
+    const bare = own
+      ? `A bare pod for ${cfg.workspace}: this run is a strut trial, so the pod is under a workspace of its own, ${own}, never from ${cfg.workspace}'s image, and what it bakes goes when the trial's job does.`
+      : "A bare pod: no image of this workspace yet.";
     let note: string;
     if (p.image === null && main) {
       note =
-        `A bare pod: no image of this workspace yet. Its repositories are cloned, the main one at ${main}. ` +
+        `${bare} Its repositories are cloned, the main one at ${main}. ` +
         "Run `pod survey` with bash, write .pod/ in the main repository, and `pod up` until `pod check` passes. Then bake.";
     } else if (p.image === null) {
       note =
-        "A bare pod: no image of this workspace yet. Clone its repositories with git (\"clone <url>\" into /workspaces), " +
+        `${bare} Clone its repositories with git ("clone <url>" into /workspaces), ` +
         "run `pod survey` with bash, write .pod/ in the main repository, and `pod up` until `pod check` passes. Then bake.";
     } else if (isReady) {
       note = `From image ${p.image}, its stack up. Run \`git pull\` with git and \`pod up\` with bash to bring it to the newest code.`;
@@ -124,7 +135,7 @@ export default defineStep({
     if (brought.some((b) => b.state === "failed")) note += " Some of its repositories aren't here: each one's problem says why.";
     return {
       pod: p.pod,
-      workspace: p.workspace,
+      workspace: cfg.workspace,
       image: p.image,
       state: p.state,
       ready: isReady,

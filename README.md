@@ -11,7 +11,7 @@ and a link to see it.
 | `git { args, repo?, pr? }` | `git <args>` in the pod, with the person's token for the remote's host for that one command. With `pr`, a push opens a pull request |
 | `url { port, path? }` | A link to one of the pod's ports, `{ url, expires }`. The job's hold keeps a 12-hour one, so its checks open `{{ urls.pod }}/<path>` |
 | `bake { status?, page?, edits? }` | The workspace's next image, from the pod. With `page` or `edits`, the workspace's page, once this pod's image is ready |
-| `release { pod? }` | Destroys the pod. Strut runs it too when the job is deleted or swept |
+| `release { pod? }` | Destroys the pod. Strut runs it too when the job is deleted or swept. A trial's pod takes its images with it |
 
 Each step is a few HTTP calls to the service, at `PODS_URL` with the box's
 tenant token in `PODS_TOKEN`. The steps find the job's pod in its hold,
@@ -36,6 +36,34 @@ in place and keeps its claims and history: strut's `graph/edit-node`
 refuses a whole new text for a page that has one. It's linked under `Pod`,
 and under `Codebase` on a box that has that page. Then the old
 `<workspace> pod` page is deleted: the agent folded in what still holds.
+
+**In a strut trial, a pod leaves nothing behind.** A trial replays a
+case to judge a page's claims, and strut's contract for one is that
+nothing it starts outlasts it: every run of it carries `ctx.trial`, and a
+case of the `job` workflow runs as a job of its own, `trial-<batch>-<hex>`,
+closed once it is judged. So in a trial:
+
+- `claim` puts the pod under a workspace of the trial's own, named after
+  its job. It starts bare, never from the named workspace's image, and
+  still clones the named workspace's repositories. It makes no
+  `Workspace` node. Its answer says which workspace the pod is for.
+- `bake` bakes under that workspace, so the named one's images never
+  change. Its page goes to a file of the job, `uploads/<workspace>
+  workspace.md` (through strut's `job/upload`), where the trial's judge
+  reads the work's files (`context/work-file`), and never to the graph.
+  As there, `page` is the first text and `edits` change it after: this
+  job's file, or else the live page.
+- `release`, which strut runs when it closes the job, also deletes that
+  workspace's images (the service's `DELETE /workspaces/:workspace/images`).
+  The hold's release records that workspace, so it's read from the hold,
+  never from what an agent passes. Until the images are gone (a bake still
+  building), the hold stays and strut tries again.
+
+What a sample leaves: its runs and their verdicts, its agent's session and
+the `StrutJob` node (strut keeps both for every deleted job), the
+service's rows of its gone pods, and on Lambda its image's log group.
+What it pushes is not held: a branch or pull request the `git` tool made
+stays on the forge.
 
 **Git tokens are the person's, by host.** `requires: { git: true }` lets
 the steps read the run's token for a repository's host,
