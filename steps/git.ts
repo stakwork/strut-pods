@@ -1,5 +1,5 @@
 import { z, defineStep } from "strut";
-import { gitAuth, httpsHost, pod, run, shown, signIn, strutStep, type Ctx } from "./_pods.js";
+import { gitAuth, httpsHost, jobFile, pod, run, shown, signIn, type Ctx } from "./_pods.js";
 
 /** The first https address among git's arguments (`clone <url>`,
  *  `fetch <url>`), its quotes dropped. */
@@ -28,12 +28,16 @@ function subcommand(args: string): string | undefined {
   return undefined;
 }
 
+/** The most of the commits' changes a held push's file keeps, in bytes. */
+const HELD_LOG_MAX = 120_000;
+
 /**
  * In a strut trial nothing leaves it (`ctx.trial`): a push is not sent and
- * no pull request is opened. What they would have sent, the branch and
- * its commits with their files and the pull request, goes to a file of the
- * trial's job, `uploads/held push <repo>.md`, where the trial's judge reads
- * the work (strut's `context/work-file`), and the tool answers `held`.
+ * no pull request is opened. What they would have sent, the branch, its
+ * commits with each one's changes and the pull request, goes to a file of
+ * the trial's job, `uploads/held push <repo>.md`, where the trial's judge
+ * reads the work (strut's `context/work-file`) as it would read the pull
+ * request, and the tool answers `held`.
  */
 async function held(
   c: Ctx,
@@ -44,10 +48,12 @@ async function held(
   const r = await run(
     c,
     p,
-    `git rev-parse --abbrev-ref HEAD; { git log --stat --format='%h %s' origin/HEAD..HEAD 2>/dev/null || git log -n 5 --stat --format='%h %s'; } | head -300`,
+    `git rev-parse --abbrev-ref HEAD; { git log --stat -p --format='commit %h %s' origin/HEAD..HEAD 2>/dev/null || git log -n 5 --stat -p --format='commit %h %s'; } | head -c ${HELD_LOG_MAX + 1}`,
     { cwd, timeoutSeconds: 30 },
   );
-  const [branch = "", ...log] = r.output.trim().split("\n");
+  const [branch = "", ...rest] = r.output.trim().split("\n");
+  let changes = rest.join("\n");
+  if (changes.length > HELD_LOG_MAX) changes = `${changes.slice(0, HELD_LOG_MAX)}\n(cut at ${HELD_LOG_MAX / 1000} KB)`;
   const send = cfg.pr ? "this push and pull request" : "this push";
   const text = [
     `# Held: a push in a trial`,
@@ -58,22 +64,15 @@ async function held(
     ...(cfg.pr ? [`- Pull request: "${cfg.pr.title}" into ${cfg.pr.base ?? "the default branch"}`] : []),
     ...(cfg.pr?.body ? ["", cfg.pr.body] : []),
     "",
-    "## The commits it would push",
+    "## The commits it would push, with their changes",
     "",
-    "```",
-    ...(log.length ? log : ["(none ahead of the default branch)"]),
-    "```",
+    "````diff",
+    changes || "(none ahead of the default branch)",
+    "````",
     "",
   ].join("\n");
-  const job = c.job;
-  const name = `held push ${cfg.repo ?? "workspaces"}.md`;
-  let kept = "";
-  if (job) {
-    const path = `uploads/${name}`;
-    if (await c.services.jobs?.read?.(job, path, { maxChars: 1 })) await strutStep(c, "job/delete-upload", { job, path });
-    const saved = await strutStep<{ path: string }>(c, "job/upload", { job, name, mediaType: "text/markdown", data: Buffer.from(text).toString("base64") });
-    if (saved) kept = ` What it would have sent is in this job's files as ${saved.path}.`;
-  }
+  const saved = await jobFile(c, `held push ${cfg.repo ?? "workspaces"}.md`, text);
+  const kept = saved ? ` What it would have sent is in this job's files as ${saved}.` : "";
   return { output: `held: this run is a strut trial, so ${send} ${cfg.pr ? "were" : "was"} not sent.${kept}`, ok: true, held: true };
 }
 

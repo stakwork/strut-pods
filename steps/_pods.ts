@@ -322,6 +322,22 @@ export interface Repository {
 /** A repository's folder under /workspaces: one plain name. */
 export const FOLDER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
+/**
+ * A markdown file of the job, `uploads/<name>`, written over the one of
+ * that name: where a trial keeps what its pod did that leaves no trace
+ * elsewhere, for the trial's judge, which reads the work's files (strut's
+ * `context/work-file`). Its path, or undefined where this strut keeps no
+ * file in a job.
+ */
+export async function jobFile(ctx: Ctx, name: string, text: string): Promise<string | undefined> {
+  const job = ctx.job;
+  if (!job) return undefined;
+  const path = `uploads/${name}`;
+  if (await ctx.services.jobs?.read?.(job, path, { maxChars: 1 })) await strutStep(ctx, "job/delete-upload", { job, path });
+  const saved = await strutStep<{ path: string }>(ctx, "job/upload", { job, name, mediaType: "text/markdown", data: Buffer.from(text).toString("base64") });
+  return saved?.path;
+}
+
 /** One of strut's own steps, run with this step's context so its rules
  *  hold as for any other caller. Undefined when this strut has none. */
 export async function strutStep<T>(ctx: Ctx, type: string, config: Record<string, unknown>): Promise<T | undefined> {
@@ -521,12 +537,11 @@ async function trialPage(ctx: Ctx, name: string, image: number, change: PageChan
   } else {
     throw new Error(`${name} doesn't exist yet: pass \`page\`, its whole text.`);
   }
-  if (file) await strutStep(ctx, "job/delete-upload", { job, path });
-  const saved = await strutStep<{ path: string }>(ctx, "job/upload", { job, name: `${name}.md`, mediaType: "text/markdown", data: Buffer.from(docs).toString("base64") });
+  const saved = await jobFile(ctx, `${name}.md`, docs);
   if (!saved) throw new Error("this strut can't keep a file in a job");
   return {
     name,
     state: "written",
-    note: `${name} is written, from image ${image}, to this trial's job as ${saved.path}, where the trial's judge reads it. A trial writes no page to the graph.`,
+    note: `${name} is written, from image ${image}, to this trial's job as ${saved}, where the trial's judge reads it. A trial writes no page to the graph.`,
   };
 }

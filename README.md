@@ -69,8 +69,8 @@ closed once it is judged. So in a trial:
   never from what an agent passes. Until the images are gone (a bake still
   building), the hold stays and strut tries again.
 - `git` sends no push and opens no pull request. It answers `held`, and
-  what they would have sent (the branch, its commits with their files,
-  the pull request) goes to a file of the job, `uploads/held push
+  what they would have sent (the branch, its commits with each one's
+  changes, cut at 120 KB, the pull request) goes to a file of the job, `uploads/held push
   <repo>.md`, where the trial's judge reads it.
 
 What a sample leaves: its runs and their verdicts, its agent's session and

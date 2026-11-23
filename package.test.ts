@@ -770,6 +770,7 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     assert.match(kept, /- Pull request: "Run shop in a pod" into the default branch/);
     assert.match(kept, /Add \.pod/);
     assert.match(kept, /\.pod\/compose\.yml/);
+    assert.match(kept, /^\+services: \{\}$/m, "each commit's changes, so the judge reads .pod/ itself");
     // git that sends nothing still runs in a trial.
     const status = (await inTrial("stadeum/pods/git", { args: "status --short", repo: "web" })).out;
     assert.equal(status.held, undefined);
