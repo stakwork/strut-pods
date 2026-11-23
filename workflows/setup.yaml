@@ -1,0 +1,13 @@
+description: >-
+  On `created: Workspace` (strut.yaml's `on:`): start a job on the Pod Setup
+  page, as the person who made the workspace, that sets it up in a pod and
+  bakes it. A workspace a job made is that job's to set up.
+input:
+  ref_id: { type: string, description: "the Workspace node" }
+  type: { type: string, required: false, description: "its type: Workspace" }
+  op: { type: string, required: false, description: "the write: created" }
+  by: { type: string, required: false, description: "the run that made it" }
+  job: { type: string, required: false, description: "that run's job, when it has one" }
+steps:
+  - id: setup
+    type: setup

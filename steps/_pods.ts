@@ -1,8 +1,8 @@
 /**
  * What every step of the package shares (PLAN.md §8): a call to the pods
  * service, the job's pod from its hold, a command run in the pod, git's
- * credential for one command, and a workspace's repositories from the
- * graph.
+ * credential for one command, a workspace and its repositories from the
+ * graph, and the workspace's `.pod/`, which strut keeps on its node.
  *
  * The service is at `PODS_URL`, with the box's tenant token in
  * `PODS_TOKEN`. A pod's podd is behind the service, at
@@ -40,7 +40,19 @@ export interface Ctx {
       /** One file of the job's directory, as strut's `job/read` reads it. */
       read?(job: string, path: string, opts?: { maxChars?: number }): Promise<{ text?: string } | null>;
     };
+    /** Files a package keeps on a node (strut `plans/package-seams.md` §1,
+     *  stakwork/strut#851): this package's own folder on it, a version at
+     *  each write. `read` takes the caller's own folder and its latest
+     *  version by default, and is null when the node holds none; `write`
+     *  needs a live node. Absent on a strut from before them. */
+    nodeFiles?: {
+      read(ref_id: string, opts?: { package?: string; version?: number }): Promise<{ package: string; version: number; files: Record<string, Uint8Array> } | null>;
+      write(ref_id: string, files: Record<string, Uint8Array | string>, opts?: { note?: string }): Promise<{ version: number }>;
+    };
   };
+  /** The run's input: what strut hands a check (`job`), or an `on:`
+   *  workflow (`ref_id`, `type`, `op`, `by`). */
+  input?: unknown;
 }
 
 export interface Reply {
@@ -189,9 +201,10 @@ export async function run(
   ctx: Ctx,
   p: string,
   cmd: string,
-  opts: { cwd?: string; env?: Record<string, string>; timeoutSeconds?: number } = {},
+  opts: { cwd?: string; env?: Record<string, string>; timeoutSeconds?: number; keepChars?: number } = {},
 ): Promise<Ran> {
   const timeout = opts.timeoutSeconds ?? 300;
+  const keep = opts.keepChars ?? KEEP_CHARS;
   const started = await must<{ id: string }>(ctx, "exec in the pod", "POST", podd(p, "/exec"), {
     cmd,
     cwd: inPod(opts.cwd ?? "/workspaces"),
@@ -215,9 +228,9 @@ export async function run(
     }
     const o = r.body as { output: string; next: number; running: boolean; exit_code: number | null; signal: number | null; timed_out: boolean; killed: boolean };
     output += o.output;
-    if (output.length > KEEP_CHARS) {
-      cut += output.length - KEEP_CHARS;
-      output = output.slice(-KEEP_CHARS);
+    if (output.length > keep) {
+      cut += output.length - keep;
+      output = output.slice(-keep);
     }
     offset = o.next;
     if (!o.running) {
@@ -340,12 +353,18 @@ export async function openPull(
   return p && { url: p.html_url, number: p.number, sha: p.head.sha };
 }
 
-// ── a workspace's repositories ────────────────────────────────────────────
+// ── a workspace ───────────────────────────────────────────────────────────
 
 /** A repository of a workspace, as the graph holds it. */
 export interface Repository {
   url: string;
   name: string;
+}
+
+/** A workspace the box keeps: its node, and its repositories by name. */
+export interface Space {
+  ref_id: string;
+  repositories: Repository[];
 }
 
 /** A repository's folder under /workspaces: one plain name. */
@@ -386,30 +405,171 @@ interface Found {
 const text = (v: unknown): string => (typeof v === "string" ? v : "");
 
 /**
- * The workspace's repositories, its main one first, then by name, as
- * stadeum/code keeps them (its `Repositories` page has the contract): a
- * `Workspace` by `name`, whose `main` is a repository's `url`, and
- * `Workspace -[INCLUDES]-> Repository`. Read if they are there, never
+ * The workspace as stadeum/code keeps it (its `Repositories` page has the
+ * contract): a `Workspace` by `name`, and `Workspace -[INCLUDES]->
+ * Repository`, ordered by name. A workspace has no main repository: its
+ * setup is its own `.pod/` (PLAN.md §1). Read if it is there, never
  * required: none when the box has no such workspace, no such types (the
  * package isn't installed) or no graph.
  */
-export async function repositories(ctx: Ctx, workspace: string): Promise<Repository[]> {
+export async function workspaceOf(ctx: Ctx, workspace: string): Promise<Space | undefined> {
   const found = await graph<{ nodes: Found[] }>(ctx, "find", { node_type: "Workspace", where: { name: workspace }, limit: 1 });
-  if (found === undefined || (typeof found === "string" && /unknown node type/.test(found))) return [];
+  if (found === undefined || (typeof found === "string" && /unknown node type/.test(found))) return undefined;
   if (typeof found === "string") throw new Error(`reading the workspace ${workspace}: ${found}`);
   const space = found.nodes[0];
-  if (!space) return [];
+  if (!space) return undefined;
   const near = await graph<Array<{ ref_id: string; direction: string }>>(ctx, "graph-neighbors", { ref_id: space.ref_id, edge_type: ["INCLUDES"], node_type: ["Repository"] });
   if (typeof near === "string") throw new Error(`reading the workspace ${workspace}'s repositories: ${near}`);
   const ids = (near ?? []).filter((n) => n.direction === "forward").map((n) => n.ref_id);
-  if (!ids.length) return [];
+  if (!ids.length) return { ref_id: space.ref_id, repositories: [] };
   const repos = await graph<{ nodes: Found[] }>(ctx, "find", { node_type: "Repository", where: { ref_id: { in: ids } }, limit: 500 });
   if (typeof repos === "string") throw new Error(`reading the workspace ${workspace}'s repositories: ${repos}`);
-  const main = text(space.properties["main"]);
-  return (repos?.nodes ?? [])
+  const repositories = (repos?.nodes ?? [])
     .map((n) => ({ url: text(n.properties["url"]), name: text(n.properties["name"]) }))
     .filter((r) => r.url)
-    .sort((a, b) => (a.url === main ? -1 : b.url === main ? 1 : a.name.localeCompare(b.name) || a.url.localeCompare(b.url)));
+    .sort((a, b) => a.name.localeCompare(b.name) || a.url.localeCompare(b.url));
+  return { ref_id: space.ref_id, repositories };
+}
+
+/** A node by its ref_id, a deleted one too: its name, or undefined when
+ *  it is gone for good or the box has no graph. */
+export async function nodeName(ctx: Ctx, ref_id: string): Promise<string | undefined> {
+  const got = await graph<{ properties?: Record<string, unknown> }>(ctx, "graph-get", { ref_id, include_deleted: true });
+  if (!got || typeof got === "string") return undefined;
+  return text(got.properties?.["name"]) || undefined;
+}
+
+// ── the workspace's `.pod/` ───────────────────────────────────────────────
+
+/** Where the workspace's `.pod/` is in a pod, beside its repositories. */
+export const STACK = "/workspaces/.pod";
+
+/** A version of the workspace's `.pod/` as strut keeps it, each file by
+ *  its path in `.pod/`. */
+export interface Stack {
+  version: number;
+  files: Record<string, Buffer>;
+}
+
+/** The latest `.pod/` strut keeps on the workspace's node (this package's
+ *  files on it), or undefined when it keeps none or this strut keeps no
+ *  files on a node. */
+export async function storedStack(ctx: Ctx, ref_id: string): Promise<Stack | undefined> {
+  const nf = ctx.services.nodeFiles;
+  if (!nf) return undefined;
+  const got = await nf.read(ref_id);
+  if (!got || !Object.keys(got.files).length) return undefined;
+  return { version: got.version, files: Object.fromEntries(Object.entries(got.files).map(([k, v]) => [k, Buffer.from(v)])) };
+}
+
+/** A path in `.pod/` that stays in it: relative, plain segments. */
+const STACK_PATH = (p: string) => !!p && !p.startsWith("/") && p.split("/").every((s) => s && s !== "." && s !== "..");
+
+/** How much of a command a write sends at once: podd takes a request of
+ *  up to 2 MB. A multiple of 4, so each piece of base64 decodes alone. */
+const PIECE = 1_000_000;
+
+/**
+ * Writes `files` to the pod's `/workspaces/.pod`, unless it has one: a pod
+ * claimed again keeps what the agent changed. In a folder beside it first,
+ * moved into place once whole. Base64 through bash, so a binary file
+ * comes through as it is. `kept` when the pod had one.
+ */
+export async function writeStack(ctx: Ctx, p: string, files: Record<string, Buffer>): Promise<"written" | "kept"> {
+  const must = async (cmd: string) => {
+    const r = await run(ctx, p, cmd);
+    if (r.exit_code !== 0) throw new Error(r.output.trim().split("\n").slice(-3).join(" ").slice(0, 500) || `bash failed (${r.exit_code ?? "killed"})`);
+    return r.output.trim();
+  };
+  if ((await must("if test -e .pod; then echo kept; else rm -rf .pod.new && mkdir .pod.new && echo new; fi")) === "kept") return "kept";
+  let cmd = "";
+  const send = async () => {
+    if (cmd) await must(`set -e\ntest -d .pod.new\n${cmd}`);
+    cmd = "";
+  };
+  for (const [path, bytes] of Object.entries(files).sort(([a], [b]) => a.localeCompare(b))) {
+    if (!STACK_PATH(path)) throw new Error(`${JSON.stringify(path.slice(0, 100))} can't be a path in .pod/`);
+    const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+    const to = quote(`.pod.new/${path}`);
+    cmd += `${dir ? `mkdir -p ${quote(`.pod.new/${dir}`)}\n` : ""}: > ${to}\n`;
+    const b64 = bytes.toString("base64");
+    for (let at = 0; at < b64.length; at += PIECE) {
+      const piece = `base64 -d >> ${to} <<'POD_FILE'\n${b64.slice(at, at + PIECE).replace(/(.{76})/g, "$1\n")}\nPOD_FILE\n`;
+      if (cmd.length + piece.length > PIECE * 1.1) await send();
+      cmd += piece;
+    }
+  }
+  await send();
+  await must("mv .pod.new .pod");
+  return "written";
+}
+
+/**
+ * The pod's `/workspaces/.pod`, each file by its path in it, or undefined
+ * when the pod has none. One command: each file's path and bytes in
+ * base64, a line each, so any name and any bytes come through.
+ */
+export async function readStack(ctx: Ctx, p: string): Promise<Record<string, Buffer> | undefined> {
+  const r = await run(
+    ctx,
+    p,
+    "test -d .pod || { echo none; exit 0; }; cd .pod && find . -type f -print0 | while IFS= read -r -d '' f; do " +
+      `printf '%s' "\${f#./}" | base64 | tr -d '\\n'; printf ' '; base64 < "$f" | tr -d '\\n'; echo; done`,
+    { keepChars: 16_000_000 },
+  );
+  if (r.exit_code !== 0) throw new Error(`reading ${STACK}: ${r.output.trim().slice(-500)}`);
+  if (r.cut) throw new Error(`${STACK} is too big to keep in strut`);
+  if (r.output.trim() === "none") return undefined;
+  const files: Record<string, Buffer> = {};
+  for (const line of r.output.split("\n")) {
+    const [path, bytes = ""] = line.split(" ");
+    if (path) files[Buffer.from(path, "base64").toString()] = Buffer.from(bytes, "base64");
+  }
+  return files;
+}
+
+/** Whether two versions of `.pod/` hold the same files, byte for byte. */
+export function sameStack(a: Record<string, Buffer>, b: Record<string, Buffer>): boolean {
+  const ka = Object.keys(a).sort();
+  const kb = Object.keys(b).sort();
+  return ka.length === kb.length && ka.every((k, i) => k === kb[i] && a[k]!.equals(b[k]!));
+}
+
+export interface StackResult {
+  state: "saved" | "unchanged" | "waiting" | "not saved";
+  version?: number;
+  note: string;
+}
+
+/**
+ * Saves the pod's `/workspaces/.pod` to strut as the next version of the
+ * workspace's (PLAN.md §3, "Bake"), once this pod's newest image is ready:
+ * so later bakes, and every bare pod, start from what was baked. Nothing is
+ * kept while the image builds or after it failed, nor in a trial, which
+ * leaves nothing behind. A version is made only when `.pod/` changed.
+ * Undefined on a strut that keeps no files on a node, where `.pod/` is
+ * kept as before, and for a pod that baked nothing.
+ */
+export async function saveStack(ctx: Ctx, h: Held, images: Image[]): Promise<StackResult | undefined> {
+  const nf = ctx.services.nodeFiles;
+  const mine = images.find((i) => i.from_pod === h.pod);
+  if (!nf || !mine) return undefined;
+  const not = (note: string): StackResult => ({ state: "not saved", note });
+  if (mine.state === "building") return { state: "waiting", note: `${STACK} is saved to strut once image ${mine.image} is ready: call bake with \`status: true\` then.` };
+  if (mine.state !== "ready") return not(`Image ${mine.image} ${mine.state}: ${STACK} is saved from a bake that's ready.`);
+  if (h.own) return not(`A strut trial keeps no ${STACK} in strut.`);
+  try {
+    const space = await workspaceOf(ctx, h.workspace);
+    if (!space) return not(`The box keeps no workspace named ${h.workspace}, so there is nowhere to keep ${STACK}.`);
+    const files = await readStack(ctx, h.pod);
+    if (!files || !Object.keys(files).length) return not(`The pod has no ${STACK}, or nothing in it: the stack is the workspace's, at ${STACK}.`);
+    const stored = await storedStack(ctx, space.ref_id);
+    if (stored && sameStack(stored.files, files)) return { state: "unchanged", version: stored.version, note: `${STACK} is as strut keeps it, version ${stored.version}.` };
+    const { version } = await nf.write(space.ref_id, files, { note: `baked into image ${mine.image} from ${h.pod}` });
+    return { state: "saved", version, note: `${STACK} is saved to strut as version ${version}, from image ${mine.image}: every bare pod of ${h.workspace} starts with it.` };
+  } catch (e) {
+    return not(e instanceof Error ? e.message : String(e));
+  }
 }
 
 // ── the workspace's page ──────────────────────────────────────────────────
@@ -438,7 +598,7 @@ export interface PageResult {
   note: string;
 }
 
-/** The workspace's page. The bare name is its main repository's page. */
+/** The workspace's page. The bare name is a repository's page. */
 export const pageName = (workspace: string) => `${workspace} workspace`;
 /** Where jobs kept what they learned before: folded into the page, then deleted. */
 const OLD_PAGE = (workspace: string) => `${workspace} pod`;

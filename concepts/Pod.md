@@ -5,8 +5,9 @@ parents:
   - Job
 ---
 A pod is a machine of the job's own. It holds the workspace's repositories
-under `/workspaces/<repo>`, runs the services they need under Docker and
-the apps being developed under pm2, and serves each port over HTTPS.
+under `/workspaces/<repo>` and its stack in `/workspaces/.pod`, runs the
+services they need under Docker and the apps being developed under pm2,
+and serves each port over HTTPS.
 
 Work in it with the pod tools: `claim`, `bash`, `edit`, `git`, `url`,
 `bake` and `release` (as tools, `stadeum_pods_<name>`). They act in the
@@ -14,15 +15,14 @@ pod. Your own `bash` and editor act on strut's disk, never on the pod.
 
 ## The loop
 
-1. **Claim** the pod with the workspace, usually the main repository's
-   name. A workspace the box keeps comes with its repositories at
-   `/workspaces/<name>`, the main one first: `claim` fetches them in a
-   pod from an image. Its answer says, for each one, what it did, or why
+1. **Claim** the pod with the workspace's name. A workspace the box
+   keeps comes with its repositories at `/workspaces/<name>`: `claim`
+   fetches them in a pod from an image. Its answer says, for each one, what it did, or why
    it couldn't (pass that on to the person). With an image, the stack is
    already running: run `git pull` with `git`, then `pod up` with `bash`.
    A workspace with no image yet comes as a bare pod, with nothing
-   running: setting it up is `Pod Setup`'s, the page under this one, so
-   open it. For a workspace the box doesn't know, `claim` brings no
+   running but the `/workspaces/.pod` strut keeps, if any: setting it
+   up is `Pod Setup`'s, the page under this one, so open it. For a workspace the box doesn't know, `claim` brings no
    repositories: clone them with `git` (`clone <url>`, into
    `/workspaces`), and set it up the same way.
 2. **Work.** Change the code, then `pod up` or `pod restart <name>`, and
@@ -40,11 +40,17 @@ pod. Your own `bash` and editor act on strut's disk, never on the pod.
    (`status: true`) `edits` to the workspace's page, `<workspace>
    workspace`, for what changed in how its systems connect or run
    (`Pod Setup` says what the page holds), and update
-   `.pod/check.sh` when what proves the app works changed.
+   `.pod/check.sh` when what proves the app works changed. That call also
+   saves `/workspaces/.pod` to strut, so `.pod/` needs no pull request.
 
 ## `.pod/`
 
-In the main repository. Each file is the stock tool's own format:
+At `/workspaces/.pod`, beside the repositories: the workspace's, not one
+repository's. Its commands run from `/workspaces`, so a path in it starts
+from there (`web/package.json`, `.pod/compose.yml`). Strut keeps it with
+the workspace: each bake saves it once its image is ready, and a bare pod
+starts with the latest. A repository's own `.pod/` still works where the
+workspace has none. Each file is the stock tool's own format:
 
 - `compose.yml`: services run from images: databases, queues, stubs.
 - `pm2.config.js`: the apps being developed: dev servers, workers. An app

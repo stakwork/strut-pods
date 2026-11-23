@@ -1,5 +1,5 @@
 package: stadeum/pods
-version: 0.10.0
+version: 0.11.0
 description: A cloud machine for each coding job, with your repos cloned and your app running, so agents can run and test it.
 job:
   tools: [claim, bash, edit, git, url, bake, release]
@@ -8,3 +8,11 @@ requires:
   # `claim` and `git` read the run's token for a repository's host
   # (`secrets.git(url)`): the person's own, for that host alone.
   git: true
+# Workflows strut runs on a graph write (strut `plans/package-seams.md` §2,
+# stakwork/strut#851), as the person whose run wrote it. A strut from
+# before `on:` refuses this key.
+on:
+  - created: Workspace
+    workflow: setup
+  - deleted: Workspace
+    workflow: drop-images

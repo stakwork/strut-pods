@@ -1,0 +1,12 @@
+description: >-
+  On `deleted: Workspace` (strut.yaml's `on:`): delete the workspace's images
+  from the pods service. Its `.pod/` goes with its node, in strut.
+input:
+  ref_id: { type: string, description: "the Workspace node, deleted" }
+  type: { type: string, required: false, description: "its type: Workspace" }
+  op: { type: string, required: false, description: "the write: deleted" }
+  by: { type: string, required: false, description: "the run that deleted it" }
+  job: { type: string, required: false, description: "that run's job, when it has one" }
+steps:
+  - id: drop
+    type: drop-images

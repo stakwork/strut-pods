@@ -5,31 +5,29 @@ and a link to see it.
 
 | Tool | Does |
 | --- | --- |
-| `claim { workspace }` | The job's pod: launched on the first call, the same pod on later ones. The workspace's repositories, when the box keeps it, cloned into a bare pod or fetched in one from an image |
+| `claim { workspace }` | The job's pod: launched on the first call, the same pod on later ones. The workspace's repositories, when the box keeps it, cloned into a bare pod or fetched in one from an image, and in a bare pod its `.pod/` from strut at `/workspaces/.pod` |
 | `bash { command, cwd?, timeout? }` | A command in the pod, with the result strut's own `bash` gives |
 | `edit { command, path, ... }` | Strut's editor (`view`, `create`, `str_replace`, `insert`) on the pod's files |
 | `git { args, repo?, pr? }` | `git <args>` in the pod, with the person's token for the remote's host for that one command. With `pr`, a push opens a pull request |
 | `url { port, path? }` | A link to one of the pod's ports, `{ url, expires }`. The job's hold keeps a 12-hour one, so its checks open `{{ urls.pod }}/<path>` |
-| `bake { status?, page?, edits? }` | The workspace's next image, from the pod. With `page` or `edits`, the workspace's page, once this pod's image is ready |
+| `bake { status?, page?, edits? }` | The workspace's next image, from the pod. Once this pod's image is ready, `/workspaces/.pod` saved to strut and, with `page` or `edits`, the workspace's page |
 | `release { pod? }` | Destroys the pod. Strut runs it too when the job is deleted or swept. A trial's pod takes its images with it |
 
-Two more steps are CHECKS on claims, never an agent's tools. `Pod Setup`'s
-claims name them, so strut judges those claims by what the world says,
-never by the agent's word:
-
-- `stadeum/pods/baked` answers whether the work's job baked a ready image
-  of its workspace from its pod, asked of the service.
-- `stadeum/pods/pushed` answers whether the work pushed `.pod/` on a branch
-  with a pull request. It finds the branches in the pod whose commits
-  change `.pod/`, then looks where the push went. In a trial, that's the
-  held push in the job's files, which must name the branch, a pull request
-  and the branch's last commit to `.pod/`. Otherwise it's GitHub, which must
-  have an open pull request from the branch that has that commit.
-
+One more step is a CHECK on a claim, never an agent's tool.
+`Pod Setup`'s claim names it, so strut judges that claim by what the
+service says, never by the agent's word: `stadeum/pods/baked` answers
+whether the work's job baked a ready image of its workspace from its pod.
 Strut hands a check the work's job and runs it before it closes a trial's
-job, so the pod and its images are still there. With no job, a job that
-holds no pod, or nothing to ask (an origin not on GitHub, a repository
-GitHub won't show), a check fails and strut records no verdict.
+job, so the pod and its images are still there. With no job, or a job that
+holds no pod, it fails and strut records no verdict.
+
+Two workflows run on graph writes, never an agent's tools (strut.yaml's
+`on:`, strut `plans/package-seams.md` §2):
+
+| Workflow | When | Does |
+| --- | --- | --- |
+| `setup` | `created: Workspace` | Starts a job on `Pod Setup` (strut's `job/start`) that sets the new workspace up and bakes it, as the person whose run made it. A workspace a job made is that job's to set up, so nothing starts |
+| `drop-images` | `deleted: Workspace` | Deletes the workspace's images from the service. Its `.pod/` goes with its node |
 
 Each step is a few HTTP calls to the service, at `PODS_URL` with the box's
 tenant token in `PODS_TOKEN`. The steps find the job's pod in its hold,
@@ -40,10 +38,22 @@ image yet, up to the bake and the workspace's page.
 
 **A workspace's repositories** are read from strut's graph, as the
 `stadeum/code` package keeps them (its `Repositories` page has the
-contract): a `Workspace` by name, its `main`, and its `INCLUDES` links to
-`Repository` nodes. Nothing requires that package: on a box without it,
-or for a name it doesn't know, `claim` brings no repositories and the
-agent clones them.
+contract): a `Workspace` by name, and its `INCLUDES` links to
+`Repository` nodes, by name. A workspace has no main repository. Nothing
+requires that package: on a box without it, or for a name it doesn't
+know, `claim` brings no repositories and the agent clones them.
+
+**A workspace's `.pod/`** is its own, at `/workspaces/.pod` beside the
+repositories (PLAN.md §1), and strut keeps it: this package's files on
+the `Workspace` node (`ctx.services.nodeFiles`, strut `plans/package-seams.md`
+§1), a version at each change. `claim` writes the latest into a bare pod
+that has none; a pod from an image has it baked in. Once this pod's newest
+image is ready, `bake` saves the pod's `/workspaces/.pod` as the next
+version, when it changed. Files go through one `bash` command each way, in
+base64, so a binary one comes through as it is. Nothing is saved in a
+trial, nor where the box keeps no such workspace. On a strut without
+files on a node, neither step does anything here, and a repository's own
+`.pod/` works as before.
 
 **A workspace's page**, `<workspace> workspace`, is a Concept page: a
 Mermaid diagram of its systems and how they connect, the system in words,
@@ -112,7 +122,9 @@ curl -X POST $STRUT/packages/install -H "authorization: Bearer $KEY" -H 'content
 ```
 
 Its tools work once `PODS_URL` and `PODS_TOKEN` are set (stadeum's
-README, "Pods"), and a subscription waits for them. Change it here, never
+README, "Pods"), and a subscription waits for them. It needs a strut that
+takes `on:` in `strut.yaml` (stakwork/strut#851): an older one refuses
+it. Change it here, never
 in strut-pods: the next publish replaces what's there.
 
 ## Trying it
@@ -141,8 +153,11 @@ changed package is installed again after an uninstall.
 started in the test's process, from a checkout of stakwork/strut's main
 with its install (`STRUT_DIR`), with `stadeum/code` from its checkout
 (`STRUT_CODE_DIR`). The pods service and two forges are stand-ins on the
-machine, so the tests reach no network and use no one's token. CI runs
-them on every PR (`.github/workflows/checks.yml`).
+machine, so the tests reach no network and use no one's token. Where the
+strut doesn't keep files on a node itself, a stand-in with the API of
+strut's `plans/package-seams.md` §1 does. Where it refuses `on:`, the
+package is installed without it and its two workflows are run directly.
+CI runs them on every PR (`.github/workflows/checks.yml`).
 
 ```bash
 STRUT_DIR=../../strut STRUT_CODE_DIR=../../strut-code npm test

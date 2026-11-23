@@ -9,9 +9,6 @@ claims:
       - { type: stadeum/pods/baked, name: a ready image from this job's pod }
   - text: From that image, a signed-out browser reaches the app, signs in as the test user and opens the pages a person would use, with no error page.
   - text: It asked the person for no secret and wrote none into a file.
-  - text: "`.pod/` is committed to a branch that the work pushes with a pull request."
-    checks:
-      - { type: stadeum/pods/pushed, name: the last commit to .pod/ on a pull request }
   - text: The workspace's page draws each system and each connection between them, says how they fit together, and says how to run them.
 ---
 A workspace with no image yet: a bare pod, its repositories cloned, and
@@ -21,20 +18,23 @@ above this one: open it first if it isn't in front of you.
 
 Done means: an image this work baked; from it, a person signs in as the
 test user and clicks through the pages they would use; no real secret
-asked for or written down; `.pod/` on a branch with a pull request; and
-the workspace's page written.
+asked for or written down; and the workspace's page written. The bake
+saves `/workspaces/.pod` to strut, so it needs no pull request.
 
 ## The setup is in the connections
 
 Each repository on its own is the easy part. What makes a workspace run
 is how its repositories reach each other: the address one calls, the
 queue or database they share, the webhook, and the setting in each that
-points at the other. Find each one and wire it in `.pod/`. Every
+points at the other. Find each one and wire it in `/workspaces/.pod`. Every
 connection you wire is an arrow on the workspace's page.
 
 ## Working
 
-- `pod survey` reads the repositories. Write `.pod/` in the main one.
+- `pod survey` reads the repositories. Write the stack in
+  `/workspaces/.pod`, beside them: it is the workspace's, not one
+  repository's. A bare pod has the one strut keeps there already, when
+  an earlier bake saved one: start from it.
 - `pod up`, then `pod status`. When something fails, read
   `pod logs <name> -n 100`, fix the config, and try again. Each try
   takes seconds.
@@ -48,13 +48,14 @@ connection you wire is an arrow on the workspace's page.
   every bake. What it leaves behind is baked: make it safe to run twice,
   and leave the app as a person would find it.
 - Bake once `pod check` passes and it looks right. A bake starts again
-  from the repositories and `.pod/` alone, on a fresh machine: it runs
-  `pod up` and `pod check` there and keeps what they leave. Whatever you
-  did by hand that isn't in `.pod/` (a package installed, a database
-  seeded, a variable set) won't be in the image.
-- Commit `.pod/` to a branch and open a pull request with `git`
-  (`push -u origin <branch>` with `pr`), so later bakes from the base
-  branch have it.
+  from the repositories and `/workspaces/.pod` alone, on a fresh machine:
+  it runs `pod up` and `pod check` there and keeps what they leave.
+  Whatever you did by hand that isn't in `.pod/` (a package installed, a
+  database seeded, a variable set) won't be in the image.
+- Once the image is ready, `bake` (`status: true`) saves
+  `/workspaces/.pod` to strut as the workspace's next version, so every
+  later bare pod starts from it. `.pod/` goes in no repository and no
+  pull request.
 
 ## The workspace's page
 
@@ -73,6 +74,5 @@ text as `page`. It holds, in this order:
 
 It sits under `Pod`, and under `Codebase` when the box has one. A pod
 released without a bake leaves no page. The workspace holds its
-repositories; for one the box doesn't know, list them on the page too,
-the main one first. An old `<workspace> pod` page goes once the page is
+repositories; for one the box doesn't know, list them on the page too. An old `<workspace> pod` page goes once the page is
 written: read it first and fold in what still holds.

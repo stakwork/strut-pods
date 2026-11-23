@@ -23,7 +23,11 @@
  *   forge records every password it was sent;
  * - a forge package (`acme/forges`) that serves each host with a secret
  *   (`provides.git`), as a GitLab or Forgejo package would. The tokens are
- *   made up for this run, and nobody's.
+ *   made up for this run, and nobody's;
+ * - files on a node (`ctx.services.nodeFiles`, strut `plans/package-seams.md`
+ *   §1), with that plan's API, where this strut doesn't keep them itself
+ *   (before stakwork/strut#851). A strut that refuses `on:` (the same plan,
+ *   §2) gets the package without it: its workflows are run here directly.
  *
  *   STRUT_DIR=../../strut STRUT_CODE_DIR=../../strut-code npm test
  */
@@ -287,6 +291,30 @@ async function holding(dir: string, needles: string[]): Promise<string[]> {
 
 const exists = (p: string) => stat(p).then(() => true, () => false);
 
+/** Files a package keeps on a node, as strut `plans/package-seams.md` §1
+ *  has them: one folder on each node, a version at each write. Only this
+ *  package writes here, so one folder a node. */
+function nodeFilesStandIn() {
+  const kept = new Map<string, Array<{ version: number; files: Record<string, Uint8Array>; note?: string }>>();
+  return {
+    async read(ref_id: string, opts: { package?: string; version?: number } = {}) {
+      const all = kept.get(ref_id) ?? [];
+      const v = opts.version === undefined ? all.at(-1) : all.find((x) => x.version === opts.version);
+      return v ? { package: "stadeum/pods", version: v.version, files: { ...v.files } } : null;
+    },
+    async write(ref_id: string, files: Record<string, Uint8Array | string>, opts: { note?: string } = {}) {
+      const all = kept.get(ref_id) ?? [];
+      kept.set(ref_id, all);
+      const version = all.length + 1;
+      all.push({ version, files: Object.fromEntries(Object.entries(files).map(([k, v]) => [k, Buffer.from(v)])), ...(opts.note ? { note: opts.note } : {}) });
+      return { version };
+    },
+    async list(ref_id: string) {
+      return (kept.get(ref_id) ?? []).map((v) => ({ package: "stadeum/pods", version: v.version, paths: Object.keys(v.files) }));
+    },
+  };
+}
+
 // ── the tests ─────────────────────────────────────────────────────────────
 
 describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
@@ -323,23 +351,30 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
   };
   /** One node per repository, however many workspaces it is in. */
   const repoNodes = new Map<string, string>();
-  const workspace = async (name: string, main: string, repos: Array<{ url: string; name: string }>) => {
-    const space = await node("Workspace", { name, main });
+  const workspace = async (name: string, repos: Array<{ url: string; name: string }>) => {
+    const space = await node("Workspace", { name });
     for (const r of repos) {
       const repo = repoNodes.get(r.url) ?? (await node("Repository", r));
       repoNodes.set(r.url, repo);
       const run = await step("graph/create-triplet", { source_ref_id: space, target_ref_id: repo, edge_type: "INCLUDES" }, "root", `graph-${++n}`);
       assert.equal(run.status, "success", JSON.stringify(run.error));
     }
+    return space;
   };
-  const install = async (dir: string) => {
-    const res = await strut.app.request("/packages/install", {
+  const installing = (dir: string) =>
+    strut.app.request("/packages/install", {
       method: "POST",
       headers: { "content-type": "application/json", "x-strut-actor": "root" },
       body: JSON.stringify({ ref: `file:${dir}` }),
     });
+  const install = async (dir: string) => {
+    const res = await installing(dir);
     assert.equal(res.status, 201, JSON.stringify(await res.json()));
   };
+  /** Whether this strut took the package's `on:` (strut#851): then strut
+   *  runs `setup` and `drop-images` on the graph's writes itself. */
+  let takesOn = false;
+
   const put = async (path: string, value: string) => {
     const res = await strut.app.request(path, { method: "PUT", headers: { "content-type": "application/json", "x-strut-actor": "root" }, body: JSON.stringify({ value }) });
     assert.ok(res.ok, `${path}: ${res.status}`);
@@ -382,7 +417,11 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     const { GraphWorkspaceStore } = await from<any>("graph/workspace-store.ts");
     const { kitForTests } = await from<any>("test-util/app-kit.ts");
     const graph = await openGraphBackend({ kind: "ladybug", path: join(root, "graph.lbug"), namespace: PRIVATE_NAMESPACE }, { embeddings: false });
+    // A strut that keeps files on a node builds them into its bag; a host's
+    // own would win over them, so the stand-in comes only without them.
+    const keepsFiles = (await readFile(join(STRUT, "src", "createStrut.ts"), "utf8")).includes("nodeFiles");
     strut = await createStrut({
+      ...(keepsFiles ? {} : { services: { nodeFiles: nodeFilesStandIn() } }),
       workspace: new GraphWorkspaceStore(graph, { materializeDir: join(root, "steps"), appsDir: join(root, "apps") }),
       dataDir: root,
       store,
@@ -407,7 +446,19 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
 
     await put("/secrets/PODS_URL", service.url);
     await put("/secrets/PODS_TOKEN", PODS_TOKEN);
-    await install(HERE);
+    const res = await installing(HERE);
+    takesOn = res.status === 201;
+    if (!takesOn) {
+      // A strut from before `on:` refuses the key, and only it: the package
+      // without it, its workflows run directly below.
+      const why = (await res.json()).error;
+      assert.match(why, /Unrecognized key: "on"$/, why);
+      const copy = join(root, "pods-package");
+      await cp(HERE, copy, { recursive: true, filter: (src) => !src.includes("node_modules") });
+      const yaml = await readFile(join(copy, "strut.yaml"), "utf8");
+      await writeFile(join(copy, "strut.yaml"), yaml.slice(0, yaml.indexOf("\non:\n") + 1));
+      await install(copy);
+    }
     // A forge package: each forge's host served by its own secret.
     const forges = join(root, "acme-forges");
     await mkdir(join(forges, "steps"), { recursive: true });
@@ -452,7 +503,7 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
 
   const TODAY = /^A bare pod: no image of this workspace yet\. Clone its repositories with git/;
 
-  it("Pod Setup's claims about the world are judged by the package's checks: the bake by the service, the push by where it went", async () => {
+  it("Pod Setup's claim about the bake is judged by the service, and none says .pod/ goes in a pull request", async () => {
     const claims = await strut.claims.claimsFor({ kind: "concept", name: "Pod Setup" });
     const checked = async (start: string) => {
       const claim = claims.find((c: any) => c.claim_text.startsWith(start));
@@ -461,7 +512,7 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
       return (await strut.claims.checksFor(claim.id)).map((k: any) => k.step_type);
     };
     assert.deepEqual(await checked("The work leaves a ready image"), ["stadeum/pods/baked"]);
-    assert.deepEqual(await checked("`.pod/` is committed to a branch"), ["stadeum/pods/pushed"]);
+    assert.ok(!claims.some((c: any) => /pull request|committed/.test(c.claim_text)), JSON.stringify(claims.map((c: any) => c.claim_text)));
   });
 
   it("claims as today on a box without stadeum/code: no repositories, nothing run in the pod", async () => {
@@ -480,24 +531,27 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     assert.deepEqual(execsOf(out.pod), []);
   });
 
-  it("clones a workspace's repositories into a bare pod, the main one first, each with its own host's token and no other", async () => {
-    // Main is `web`, after `api` by name: main first is the graph's main.
-    await workspace("shop", a.url("acme/web"), [
-      { url: b.url("acme/api"), name: "api" },
+  /** shop's Workspace node. */
+  let shopNode = "";
+
+  it("clones a workspace's repositories into a bare pod by name, each with its own host's token and no other", async () => {
+    shopNode = await workspace("shop", [
       { url: a.url("acme/web"), name: "web" },
+      { url: b.url("acme/api"), name: "api" },
     ]);
     const sentA = a.sent.length;
     const sentB = b.sent.length;
     const out = await claim("shop", "ada", "job-shop");
     shopPod = out.pod;
     assert.deepEqual(out.repositories, [
-      { url: a.url("acme/web"), path: "/workspaces/web", state: "cloned" },
       { url: b.url("acme/api"), path: "/workspaces/api", state: "cloned" },
+      { url: a.url("acme/web"), path: "/workspaces/web", state: "cloned" },
     ]);
-    assert.match(out.note, /^A bare pod: no image of this workspace yet\. Its repositories are cloned, the main one at \/workspaces\/web\. Run `pod survey`/);
+    assert.equal(out.stack, undefined, "strut keeps no .pod/ for shop yet");
+    assert.match(out.note, /^A bare pod: no image of this workspace yet\. Its repositories are cloned under \/workspaces\. Run `pod survey` with bash, write the workspace's stack in \/workspaces\/\.pod/);
 
     // One command each, in order, each with its own host's token alone.
-    const [web, api, ...more] = execsOf(out.pod);
+    const [api, web, ...more] = execsOf(out.pod);
     assert.equal(more.length, 0);
     assert.match(web!.cmd, /clone --quiet -- 'https:\/\/127\.0\.0\.1:\d+\/acme\/web' 'web'/);
     assert.deepEqual([web!.env["POD_GIT_HOST"], web!.env["POD_GIT_TOKEN"]], [a.host, ONE]);
@@ -524,10 +578,10 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     assert.equal(out.image, 7);
     assert.deepEqual(
       out.repositories.map((r: any) => [r.path, r.state]),
-      [["/workspaces/web", "fetched"], ["/workspaces/api", "fetched"]],
+      [["/workspaces/api", "fetched"], ["/workspaces/web", "fetched"]],
     );
     assert.match(out.note, /^From image 7, its stack up\. Run `git pull` with git/);
-    const [web, api] = execsOf(out.pod);
+    const [api, web] = execsOf(out.pod);
     assert.match(web!.cmd, /git -C 'web' -c credential\.helper= -c '.*' fetch --quiet origin/);
     assert.equal(web!.env["POD_GIT_TOKEN"], ONE);
     assert.equal(api!.env["POD_GIT_TOKEN"], TWO);
@@ -538,19 +592,19 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
   });
 
   it("clones a public repository with no token, and says plainly whose account isn't connected for a private one", async () => {
-    await workspace("mixed", a.url("acme/docs"), [
+    await workspace("mixed", [
       { url: a.url("acme/docs"), name: "docs" },
       { url: b.url("acme/api"), name: "api" },
     ]);
     const out = await claim("mixed", "bob", "job-bob");
     assert.deepEqual(out.repositories, [
-      { url: a.url("acme/docs"), path: "/workspaces/docs", state: "cloned" },
       {
         url: b.url("acme/api"),
         path: "/workspaces/api",
         state: "failed",
         problem: `${b.url("acme/api")} asks for a sign-in (it is private, or not there), and no account on ${b.host} is connected for bob: connect one, then try again.`,
       },
+      { url: a.url("acme/docs"), path: "/workspaces/docs", state: "cloned" },
     ]);
     assert.match(out.note, /Some of its repositories aren't here: each one's problem says why\.$/);
     for (const e of execsOf(out.pod)) {
@@ -562,12 +616,17 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
   });
 
   it("checks a repository's name before it is a folder, and runs nothing for one that can't be", async () => {
-    await workspace("odd", a.url("acme/docs"), [
+    await workspace("odd", [
       { url: a.url("acme/docs"), name: "docs" },
       { url: a.url("acme/odd"), name: "../../etc" },
+      { url: a.url("acme/dot"), name: ".pod" },
     ]);
     const out = await claim("odd", "ada", "job-odd");
-    assert.deepEqual(out.repositories[1], { url: a.url("acme/odd"), path: "", state: "failed", problem: `its name "../../etc" can't be a folder's` });
+    const failed = out.repositories.filter((r: any) => r.state === "failed");
+    assert.deepEqual(failed, [
+      { url: a.url("acme/odd"), path: "", state: "failed", problem: `its name "../../etc" can't be a folder's` },
+      { url: a.url("acme/dot"), path: "", state: "failed", problem: "its name is the workspace's /workspaces/.pod" },
+    ]);
     assert.equal(execsOf(out.pod).length, 1, "only docs ran");
   });
 
@@ -684,6 +743,183 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     assert.equal((await concept("shop workspace"))!.properties["docs"], after.properties["docs"]);
   });
 
+  // ── the workspace's .pod/, kept in strut ───────────────────────────────
+
+  /** The files strut keeps on a node for this package: its latest version. */
+  const kept = async (ref: string) => strut.services.nodeFiles.read(ref, { package: "stadeum/pods" });
+  /** A .pod/ with a binary file and a name with a space in it. */
+  const STACK = {
+    "compose.yml": "services:\n  db: { image: postgres:17 }\n",
+    "pm2.config.js": "module.exports = { apps: [] };\n",
+    "seed/blob bin": Buffer.from([0, 1, 2, 0xff, 0xfe, 10, 13, 0]),
+  };
+  const writeInPod = async (pod: string, files: Record<string, string | Buffer>) => {
+    for (const [path, data] of Object.entries(files)) {
+      const to = join(service.workspaces(pod), ".pod", path);
+      await mkdir(dirname(to), { recursive: true });
+      await writeFile(to, data);
+    }
+  };
+  const inPod = async (pod: string) => {
+    const dir = join(service.workspaces(pod), ".pod");
+    const out: Record<string, Buffer> = {};
+    for (const e of await readdir(dir, { withFileTypes: true, recursive: true })) {
+      if (e.isFile()) out[join(e.parentPath, e.name).slice(dir.length + 1)] = await readFile(join(e.parentPath, e.name));
+    }
+    return out;
+  };
+  const same = (a: Record<string, Uint8Array>, b: Record<string, string | Buffer>) =>
+    assert.deepEqual(
+      Object.fromEntries(Object.entries(a).map(([k, v]) => [k, Buffer.from(v).toString("hex")])),
+      Object.fromEntries(Object.entries(b).map(([k, v]) => [k, Buffer.from(v).toString("hex")])),
+    );
+
+  it("bake saves the pod's /workspaces/.pod to strut once its image is ready, and a version only when it changed", async () => {
+    await writeInPod(shopPod, STACK);
+    let out = await bake({});
+    assert.deepEqual(out.stack, { state: "waiting", note: `/workspaces/.pod is saved to strut once image ${out.started} is ready: call bake with \`status: true\` then.` });
+    assert.equal(await kept(shopNode), null, "nothing while it builds");
+    latest().state = "ready";
+    out = await bake({ status: true });
+    assert.equal(out.stack.state, "saved", out.stack.note);
+    const first = await kept(shopNode);
+    assert.equal(out.stack.version, first.version);
+    same(first.files, STACK);
+
+    // Asked again: the same files, no new version.
+    out = await bake({ status: true });
+    assert.deepEqual([out.stack.state, out.stack.version], ["unchanged", first.version]);
+
+    // Changed, baked and ready: the next version.
+    await writeInPod(shopPod, { "check.sh": "curl -fsS localhost:5173\n" });
+    out = await bake({});
+    latest().state = "ready";
+    out = await bake({ status: true });
+    assert.deepEqual([out.stack.state, out.stack.version], ["saved", first.version + 1]);
+    same((await kept(shopNode)).files, { ...STACK, "check.sh": "curl -fsS localhost:5173\n" });
+  });
+
+  it("a bare pod of the workspace starts with its .pod/ from strut, and one claimed again keeps its own", async () => {
+    const version = (await kept(shopNode)).version;
+    const out = await claim("shop", "ada", "job-shop-stack");
+    assert.equal(out.image, null);
+    assert.deepEqual(out.stack, { path: "/workspaces/.pod", version, state: "written" });
+    assert.match(out.note, new RegExp(`^A bare pod: no image of this workspace yet\\. Its repositories are cloned under /workspaces\\. /workspaces/\\.pod is the workspace's stack from strut, version ${version}`));
+    same(await inPod(out.pod), { ...STACK, "check.sh": "curl -fsS localhost:5173\n" });
+    assert.ok(!(await exists(join(service.workspaces(out.pod), ".pod.new"))), "moved into place whole");
+
+    // The agent changes it; a claim again leaves it as it is.
+    await writeInPod(out.pod, { "compose.yml": "services: {}\n" });
+    const again = await claim("shop", "ada", "job-shop-stack");
+    assert.equal(again.pod, out.pod);
+    assert.equal(again.stack.state, "kept");
+    assert.equal((await inPod(out.pod))["compose.yml"]!.toString(), "services: {}\n");
+    await step("stadeum/pods/release", {}, "ada", "job-shop-stack");
+  });
+
+  it("without files on a node, claim and bake keep .pod/ as before: nothing written, nothing saved", async () => {
+    const nodeFiles = strut.services.nodeFiles;
+    delete strut.services.nodeFiles;
+    try {
+      const out = await claim("shop", "ada", "job-shop-old");
+      assert.equal(out.stack, undefined);
+      assert.ok(!(await exists(join(service.workspaces(out.pod), ".pod"))));
+      assert.match(out.note, /write the workspace's stack in \/workspaces\/\.pod/);
+      latest().state = "ready";
+      assert.equal((await bake({ status: true })).stack, undefined);
+      await step("stadeum/pods/release", {}, "ada", "job-shop-old");
+    } finally {
+      strut.services.nodeFiles = nodeFiles;
+    }
+  });
+
+  // ── on: a workspace made, a workspace deleted ───────────────────────────
+
+  /** One of the package's workflows, run as strut runs an `on:` entry: as the writer, with the write. */
+  const onWrite = async (workflow: string, input: Record<string, unknown>, actor = "ada", trial?: { case: string; claims: string[] }) => {
+    const run = (await strut.run(`stadeum/pods/${workflow}`, input, { actor, principal: actor, ...(trial ? { trial } : {}) })) as { status: string; output: any; error?: unknown };
+    assert.equal(run.status, "success", JSON.stringify(run.error));
+    // A one-step workflow's output is its step's.
+    return run.output as any;
+  };
+
+  /** Waits for `ok`, up to 15 s: what `on:` starts is detached, a second after the write. */
+  const eventually = async (ok: () => Promise<boolean> | boolean, what: string) => {
+    for (let i = 0; i < 150; i++) {
+      if (await ok()) return;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.fail(`never: ${what}`);
+  };
+  const jobTitled = async (title: string) => {
+    const res = await strut.app.request(`/jobs?q=${encodeURIComponent(title)}`, { headers: { "x-strut-actor": "root" } });
+    return JSON.stringify(await res.json()).includes(title);
+  };
+
+  it("on a strut that takes on:, a workspace a person makes starts its setup, and one a job makes doesn't", async (t) => {
+    if (!takesOn) return t.skip("this strut refuses on: (before strut#851)");
+    // Made with no job, as the Code app makes one.
+    const name = `test/s${++n}`;
+    await strut.workspace.publishWorkflowByContent(name, `steps:\n  - id: s\n    type: graph/create-node\n    config: ${JSON.stringify({ node_type: "Workspace", node_data: { name: "byhand" } })}\n`);
+    const made = (await strut.run(name, {}, { actor: "root", principal: "root" })) as { status: string; error?: unknown };
+    assert.equal(made.status, "success", JSON.stringify(made.error));
+    await eventually(() => jobTitled("Set up byhand"), "a job sets byhand up");
+    // Every other workspace here was made under a job.
+    assert.ok(!(await jobTitled("Set up shop")), "a job made shop: no setup job");
+  });
+
+  it("setup leaves a workspace a job made to that job, and starts no job in a trial", async () => {
+    const ref = await workspace("made", [{ url: a.url("acme/docs"), name: "docs" }]);
+    assert.deepEqual(await onWrite("setup", { ref_id: ref, type: "Workspace", op: "created", by: "r1", job: "job-maker" }), {
+      started: false,
+      note: "Job job-maker made the workspace, so it sets it up itself.",
+    });
+    const held = await onWrite("setup", { ref_id: ref, type: "Workspace", op: "created", by: "r1" }, "ada", TRIAL);
+    assert.equal(held.started, false);
+    assert.equal(held.workspace, "made");
+    assert.match(held.note, /^A strut trial starts no job: one would set made up\.$/);
+  });
+
+  it("setup starts a job on Pod Setup as the person who made the workspace", async () => {
+    const ref = (await named("Workspace", "made"))[0]!.ref_id;
+    const out = await onWrite("setup", { ref_id: ref, type: "Workspace", op: "created", by: "r2" });
+    assert.equal(out.started, true, out.note);
+    assert.equal(out.workspace, "made");
+    // The job is launched detached: its record follows.
+    let job: unknown;
+    for (let i = 0; i < 100 && !job; i++) {
+      const res = await strut.app.request(`/jobs/${out.job}`, { headers: { "x-strut-actor": "ada" } });
+      if (res.ok) job = await res.json();
+      else await new Promise((ok) => setTimeout(ok, 50));
+    }
+    assert.ok(job, `job ${out.job} has no record`);
+    assert.match(JSON.stringify(job), /Set up made/);
+  });
+
+  it("drop-images deletes a deleted workspace's images, its name read from the deleted node", async () => {
+    const ref = (await named("Workspace", "made"))[0]!.ref_id;
+    service.bakes.set("made", [{ workspace: "made", image: 1, state: "ready", from_pod: "pod-x" }]);
+    const gone = await step("graph/delete-node", { ref_id: ref, reason: "a test" }, "root", `graph-${++n}`);
+    assert.equal(gone.status, "success", JSON.stringify(gone.error));
+    const before = service.deleted.length;
+    if (takesOn) {
+      // Strut runs drop-images on the delete itself.
+      await eventually(() => service.deleted.length > before, "strut runs drop-images");
+    } else {
+      assert.deepEqual(await onWrite("drop-images", { ref_id: ref, type: "Workspace", op: "deleted", by: "r3" }), {
+        workspace: "made",
+        deleted: 1,
+        note: "made's images are deleted (1).",
+      });
+    }
+    assert.deepEqual(service.deleted.slice(before), ["made"]);
+    assert.equal(service.bakes.get("made"), undefined);
+    // One gone for good says so and deletes nothing.
+    const none = await onWrite("drop-images", { ref_id: "no-such-node" });
+    assert.match(none.note, /gone for good/);
+    assert.equal(service.deleted.length, before + 1);
+  });
+
   // ── a strut trial ───────────────────────────────────────────────────────
 
   /** A sample of a trial, as strut runs one: a job of its own, `trial-<batch>-<hex>`. */
@@ -709,7 +945,7 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     assert.equal(out.workspace, "shop");
     assert.deepEqual(
       out.repositories.map((r: any) => [r.path, r.state]),
-      [["/workspaces/web", "cloned"], ["/workspaces/api", "cloned"]],
+      [["/workspaces/api", "cloned"], ["/workspaces/web", "cloned"]],
     );
     assert.match(out.note, new RegExp(`^A bare pod for shop: this run is a strut trial, so the pod is under a workspace of its own, ${sample}, never from shop's image`));
     assert.deepEqual(await named("Workspace", sample), [], "no Workspace node");
@@ -801,57 +1037,6 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     r = await check("job-nobody");
     assert.equal(r.status, "error");
     assert.match(JSON.stringify(r.error), /holds no pod/);
-  });
-
-  it("the pushed check finds the branch that changes .pod/ and asks where its push went: a trial's held push, or GitHub", async () => {
-    const name = `test/s${++n}`;
-    await strut.workspace.publishWorkflowByContent(name, "steps:\n  - id: s\n    type: stadeum/pods/pushed\n");
-    const check = async (job: string) => {
-      const run = (await strut.run(name, { job }, { actor: "ada", principal: "ada" })) as { status: string; output: any; error?: unknown };
-      return { status: run.status, error: run.error, out: run.output?.s ?? run.output };
-    };
-    const last = () => git(join(service.workspaces(trialPod), "web"), "log", "-1", "--format=%H", "pod-setup", "--", ".pod").slice(0, 7);
-    const yes = (c: string) => ({
-      supports: true,
-      content: `web's branch pod-setup, with the last commit to .pod/ (${c}), was pushed with the pull request "Run shop in a pod" into the default branch. Held, as a trial's push is: it is held push web.md in the job's files.`,
-    });
-
-    // The trial's push of pod-setup (held, above) carries its .pod/.
-    let r = await check(sample);
-    assert.equal(r.status, "success", JSON.stringify(r.error));
-    assert.deepEqual(r.out, yes(last()));
-    // .pod/ changed after the push: not pushed, until it is again.
-    const more = await inTrial("stadeum/pods/bash", {
-      command: "echo 'x: 1' >> .pod/compose.yml && git add .pod && git -c user.email=t@t -c user.name=t commit -q -m 'More .pod'",
-      cwd: "web",
-    });
-    assert.equal(more.status, "success", JSON.stringify(more.error));
-    r = await check(sample);
-    assert.deepEqual(r.out, { supports: false, content: `The push of web's branch pod-setup doesn't carry the last commit to .pod/ (${last()}): it was committed after the push.` });
-    await inTrial("stadeum/pods/git", { args: "push -u origin pod-setup", repo: "web", pr: { title: "Run shop in a pod" } });
-    assert.deepEqual((await check(sample)).out, yes(last()));
-
-    // A job that holds no pod: nothing to look at, so no verdict.
-    r = await check("job-nobody");
-    assert.equal(r.status, "error");
-    assert.match(JSON.stringify(r.error), /holds no pod/);
-
-    // Not a trial: shop's pod. Nothing changes .pod/ yet.
-    r = await check("job-shop");
-    assert.equal(r.status, "success", JSON.stringify(r.error));
-    assert.deepEqual(r.out, { supports: false, content: "No branch in the pod's repositories changes .pod/ past its default branch: .pod/ was never committed." });
-    // Then a branch does, and its push is asked of GitHub, where this package
-    // opens pull requests. The forge here isn't GitHub: no verdict.
-    const made = await step(
-      "stadeum/pods/bash",
-      { command: "git checkout -q -b pod-setup && mkdir -p .pod && echo 'services: {}' > .pod/compose.yml && git add .pod && git -c user.email=t@t -c user.name=t commit -q -m 'Add .pod'", cwd: "web" },
-      "ada",
-      "job-shop",
-    );
-    assert.equal(made.status, "success", JSON.stringify(made.error));
-    r = await check("job-shop");
-    assert.equal(r.status, "error");
-    assert.match(JSON.stringify(r.error), /can't tell\. web's origin isn't on GitHub, where this package opens pull requests\./);
   });
 
   it("closing a trial's job releases its pod and deletes its own workspace's images; shop's image and page stay", async () => {
