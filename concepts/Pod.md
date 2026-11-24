@@ -33,10 +33,8 @@ pod. Your own `bash` and editor act on strut's disk, never on the pod.
 3. **Look at it.** `url` with the app's port gives a link. Open that link
    (never the bare `<pod>-<port>` name, which needs the link's cookie)
    with `browser/verify` or `browser/walkthrough`, or give it to the person,
-   who can watch it change as you work. The person's job card shows the
-   main frontend as Open pod. A workspace with another frontend (an admin
-   app, docs) gets `url` with a `name` for it, `name: "admin"`, and the
-   card shows it as Open admin too. Log in as the test user and open
+   who can watch it change as you work. Each `url` also sets a button on
+   the person's job card (below). Log in as the test user and open
    the pages that matter. A page that answers isn't proof that it works.
 4. **Push** the work on a branch and open a PR with `git`
    (`push -u origin <branch>` with `pr`).
@@ -47,6 +45,30 @@ pod. Your own `bash` and editor act on strut's disk, never on the pod.
    (`Pod Setup` says what the page holds), and update
    `.pod/check.sh` when what proves the app works changed. That call also
    saves `/workspaces/.pod` to strut, so `.pod/` needs no pull request.
+
+## The person's links
+
+The person gets into the pod from the buttons on their job card, one for
+each link the job names, in their own browser, signed out.
+
+- **A link for each app a person opens.** The main one, `url` with no
+  name, is Open pod: the app they click through first, usually the one
+  they sign into. Each other app they open (an admin app, docs, a second
+  UI) gets a `name` and a button of its own. An API, or a port that
+  answers only with a key, is no way in on its own: it gets no link,
+  unless it serves pages that take the key in their URL.
+- **Each lands where a signed-out browser gets in.** Open pod opens the
+  app's root, where the job's checks add a path, so the main app is one
+  whose root sends a signed-out browser to sign in. A named link lands on
+  its `path`: the app's sign-in page (`/signin`), or, for an app that
+  takes its key in its URL, the pod's dev key (`/?key=<dev key>`).
+- **A dev key, never a secret.** An app that wants a key of its own gets
+  a made-up one in `.pod/`, like the test user's password: it opens
+  nothing outside the pod. A real secret never goes in a link: the job
+  and the person's chat keep links.
+- **Your reply matches the buttons.** Send the person to each by its
+  name (Open pod, Open admin), with the test user to sign in as. Name no
+  way in that has no button, such as a port or a path to type.
 
 ## `.pod/`
 

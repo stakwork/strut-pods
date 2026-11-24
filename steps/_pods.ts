@@ -170,6 +170,31 @@ export async function hold(ctx: Ctx, h: Held): Promise<void> {
   });
 }
 
+/** Each job's change to its hold in flight, so the next waits for it. */
+const changing = new Map<string, Promise<unknown>>();
+
+/** Changes the job's hold on pod `p`: read afresh and written back, one
+ *  change at a time for each job. A turn's tool calls can run at once, and
+ *  two `url` calls that each wrote back the hold they read before asking
+ *  the service for links lost one of the links (2026-11-24). Strut runs a
+ *  job's turns in one process, so a lock here is enough. */
+export async function changeHold(ctx: Ctx, p: string, change: (h: Held) => Held): Promise<void> {
+  const { job } = jobsOf(ctx);
+  const mine = (changing.get(job) ?? Promise.resolve())
+    .catch(() => {})
+    .then(async () => {
+      const h = await held(ctx, p);
+      if (!h) throw new Error(`this job no longer holds the pod ${p}: claim it again`);
+      await hold(ctx, change(h));
+    });
+  changing.set(job, mine);
+  try {
+    await mine;
+  } finally {
+    if (changing.get(job) === mine) changing.delete(job);
+  }
+}
+
 /** `/pods/<pod>/podd<path>`. */
 export const podd = (p: string, path: string) => `/pods/${encodeURIComponent(p)}/podd${path}`;
 

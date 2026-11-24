@@ -878,18 +878,6 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     return JSON.stringify(await res.json()).includes(title);
   };
 
-  it("on a strut that takes on:, a workspace a person makes starts its setup, and one a job makes doesn't", async (t) => {
-    if (!takesOn) return t.skip("this strut refuses on: (before strut#851)");
-    // Made with no job, as the Code app makes one.
-    const name = `test/s${++n}`;
-    await strut.workspace.publishWorkflowByContent(name, `steps:\n  - id: s\n    type: graph/create-node\n    config: ${JSON.stringify({ node_type: "Workspace", node_data: { name: "byhand" } })}\n`);
-    const made = (await strut.run(name, {}, { actor: "root", principal: "root" })) as { status: string; error?: unknown };
-    assert.equal(made.status, "success", JSON.stringify(made.error));
-    await eventually(() => jobTitled("Set up byhand"), "a job sets byhand up");
-    // Every other workspace here was made under a job.
-    assert.ok(!(await jobTitled("Set up shop")), "a job made shop: no setup job");
-  });
-
   /** Runs `fn` with strut's step `type` as `def`, or with none when `def`
    *  is undefined, whatever this strut has: the run's `ctx.registry` is
    *  strut's registry at the run's start. */
@@ -917,6 +905,24 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
       return { session: `${ctx.actor}/0123456789ab`, job: `job-chat-${chats.length}` };
     },
   };
+
+  it("on a strut that takes on:, a workspace a person makes starts its setup, and one a job makes doesn't", async (t) => {
+    if (!takesOn) return t.skip("this strut refuses on: (before strut#851)");
+    // Made with no job, as the Code app makes one. Its setup starts a chat,
+    // stood in for: this strut holds none, so its own conversation/start
+    // refuses (strut#858).
+    const name = `test/s${++n}`;
+    await strut.workspace.publishWorkflowByContent(name, `steps:\n  - id: s\n    type: graph/create-node\n    config: ${JSON.stringify({ node_type: "Workspace", node_data: { name: "byhand" } })}\n`);
+    const setUp = (ws: string) => chats.some((c) => c.config.job?.title === `Set up ${ws}`);
+    await withStep("conversation/start", conversationStart, async () => {
+      const made = (await strut.run(name, {}, { actor: "root", principal: "root" })) as { status: string; error?: unknown };
+      assert.equal(made.status, "success", JSON.stringify(made.error));
+      await eventually(() => setUp("byhand"), "a chat sets byhand up");
+    });
+    assert.equal(chats.find((c) => c.config.job?.title === "Set up byhand")!.actor, "root", "as the person who made it");
+    // Every other workspace here was made under a job.
+    assert.ok(!setUp("shop") && !(await jobTitled("Set up shop")), "a job made shop: no setup");
+  });
 
   it("setup leaves a workspace a job made to that job, and starts no chat or job in a trial", async () => {
     const ref = await workspace("made", [{ url: a.url("acme/docs"), name: "docs" }]);
@@ -1201,6 +1207,66 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     now = await job_();
     assert.equal(now.hold, undefined, "the links go with the pod");
     assert.deepEqual(now.urls, {});
+  });
+
+  it("url lands a named link's button on its path, a sign-in or a dev key, and keeps urls.pod at the app's root", async () => {
+    const job = "job-landings";
+    const { pod } = await claim("shop", "ada", job);
+    const held = async () => {
+      const res = await strut.app.request(`/jobs/${job}`, { headers: { "x-strut-actor": "ada" } });
+      const v = (await res.json()) as { holds: Array<{ kind: string; url?: string; links?: Record<string, string> }> };
+      const h = v.holds.find((x) => x.kind === "pod");
+      return { pod: h?.url ?? "", ...h?.links };
+    };
+    const url = async (config: Record<string, unknown>) => {
+      const run = await step("stadeum/pods/url", config, "ada", job);
+      assert.equal(run.status, "success", JSON.stringify(run.error));
+      return (run.out as { url: string }).url;
+    };
+    // The stand-in service puts a link's path after its token, as the real one does.
+    const lands = (port: number, path = "") =>
+      new RegExp(`^https://${pod}-${port}\\.pods\\.test/_pods/open/[0-9a-f]+${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
+
+    assert.match(await url({ port: 3001, path: "/settings" }), lands(3001, "/settings"), "the agent's link lands on its path");
+    assert.match((await held()).pod, lands(3001), "urls.pod stays at the app's root, where the checks add a path");
+
+    assert.match(await url({ port: 3000, name: "strut", path: "?key=pod-dev-key" }), lands(3000, "/?key=pod-dev-key"));
+    assert.match((await held())["strut"] ?? "", lands(3000, "/?key=pod-dev-key"), "a named link's button carries the app's dev key");
+    await url({ port: 5173, name: "admin", path: "signin" });
+    let now = await held();
+    assert.match(now["admin"] ?? "", lands(5173, "/signin"), "or lands on its sign-in");
+    assert.match(now["strut"] ?? "", lands(3000, "/?key=pod-dev-key"), "beside the other");
+    assert.match(now.pod, lands(3001));
+
+    await url({ port: 5173, name: "admin" });
+    assert.match((await held())["admin"] ?? "", lands(5173), "a named link with no path lands at the app's root");
+    const spaced = await step("stadeum/pods/url", { port: 5173, name: "admin", path: "/a b" }, "ada", job);
+    assert.equal(spaced.status, "error", "a path with a space");
+    await step("stadeum/pods/release", {}, "ada", job);
+    now = await held();
+    assert.deepEqual(now, { pod: "" });
+  });
+
+  it("url keeps every link when its calls come at once: the main one and each named one", async () => {
+    // A turn's tool calls can run together, and each url reads the hold,
+    // asks the service for its links, then writes the hold back. On a
+    // Stadeum box, Open strut was written over Open pod (2026-11-24).
+    // One run, as a turn is, with its steps at once (`depends: []`).
+    const job = "job-at-once";
+    const { pod } = await claim("shop", "ada", job);
+    const calls = [{ port: 3001 }, { port: 3000, name: "strut" }, { port: 5173, name: "admin" }];
+    const name = `test/s${++n}`;
+    const yaml = calls.map((c, i) => `  - id: u${i}\n    type: stadeum/pods/url\n    depends: []\n    config: ${JSON.stringify(c)}\n`).join("");
+    await strut.workspace.publishWorkflowByContent(name, `steps:\n${yaml}`);
+    const run = (await strut.run(name, {}, { actor: "ada", principal: "ada", job })) as { status: string; error?: unknown };
+    assert.equal(run.status, "success", JSON.stringify(run.error));
+    const res = await strut.app.request(`/jobs/${job}`, { headers: { "x-strut-actor": "ada" } });
+    const h = ((await res.json()) as { holds: Array<{ kind: string; url?: string; links?: Record<string, string> }> }).holds.find((x) => x.kind === "pod");
+    const at = (port: number) => new RegExp(`^https://${pod}-${port}\\.pods\\.test/`);
+    assert.match(h?.url ?? "", at(3001), "Open pod stays");
+    assert.match(h?.links?.["strut"] ?? "", at(3000), "beside Open strut");
+    assert.match(h?.links?.["admin"] ?? "", at(5173), "and Open admin");
+    await step("stadeum/pods/release", {}, "ada", job);
   });
 
   it("never puts a token in a run's record or a log", () => {

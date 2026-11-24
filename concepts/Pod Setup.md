@@ -7,7 +7,7 @@ claims:
   - text: The work leaves a ready image of the workspace, baked by this work.
     checks:
       - { type: stadeum/pods/baked, name: a ready image from this job's pod }
-  - text: From that image, a signed-out browser reaches the app, signs in as the test user and opens the pages a person would use, with no error page.
+  - text: From that image, a signed-out browser gets into each app a person opens from the job's link to it (Open pod, and one for each other app), signs in as the test user and opens the pages a person would use, with no error page.
   - text: It asked the person for no secret and wrote none into a file.
   - text: The workspace's page draws each system and each connection between them, says how they fit together and how to run them, and says which repositories run in the pod and which are only source.
 ---
@@ -16,11 +16,12 @@ nothing running. Set it up until a person can use it, then bake it. What
 a pod is, its tools and how its addresses work are on `Pod`, the page
 above this one: open it first if it isn't in front of you.
 
-Done means: an image this work baked; from it, a person signs in as the
-test user and clicks through the pages they would use; no real secret
-asked for or written down; and the workspace's page written, saying what
-runs and what is only source. The bake saves `/workspaces/.pod` to
-strut, so it needs no pull request.
+Done means: an image this work baked; from it, a person opens the app
+from a button on their job card, signs in as the test user and clicks
+through the pages they would use; no real secret asked for or written
+down; and the workspace's page written, saying what runs and what is
+only source. The bake saves `/workspaces/.pod` to strut, so it needs no
+pull request.
 
 ## What runs
 
@@ -56,7 +57,8 @@ connection you wire is an arrow on the workspace's page.
   takes seconds.
 - Stub what the workspace calls out to, and ask the person only for what
   nothing can stand in for (`Pod`'s rules of thumb).
-- Look at it as a person would: `url`, then strut's browser
+- Look at it as a person would: from the links the person gets
+  (`Pod`'s "The person's links"), signed out, in strut's browser
   (`browser/verify`, `browser/walkthrough`). Sign in as the test user and
   open the pages that matter. A page that answers isn't proof that it
   works.
@@ -85,8 +87,9 @@ text as `page`. It holds, in this order:
   connection (an HTTP route, a queue, a webhook, a shared database),
   labelled with the setting that points it;
 - the system in words: how the parts fit together;
-- how to run it: the services and ports, the test user, and what broke
-  and how it was fixed;
+- how to run it: the services and ports, the apps a person opens and
+  where each one's link lands, the test user, and what broke and how it
+  was fixed;
 - what runs in the pod and what is only source, and why.
 
 It sits under `Pod`, and under `Codebase` when the box has one. A pod
