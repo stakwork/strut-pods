@@ -26,7 +26,7 @@ Two workflows run on graph writes, never an agent's tools (strut.yaml's
 
 | Workflow | When | Does |
 | --- | --- | --- |
-| `setup` | `created: Workspace` | Starts a job on `Pod Setup` (strut's `job/start`) that sets the new workspace up and bakes it, as the person whose run made it. A workspace a job made is that job's to set up, so nothing starts |
+| `setup` | `created: Workspace` | Starts a job on `Pod Setup` that sets the new workspace up and bakes it, in a Jamie chat of the person whose run made it (strut's `conversation/start`, `package-seams.md` §7): their message is "Set up <name>" and the workspace's `note`, and the chat is about the workspace. A strut without `conversation/start` starts the job alone (`job/start`). A workspace a job made is that job's to set up, so nothing starts |
 | `drop-images` | `deleted: Workspace` | Deletes the workspace's images from the service. Its `.pod/` goes with its node |
 
 Each step is a few HTTP calls to the service, at `PODS_URL` with the box's

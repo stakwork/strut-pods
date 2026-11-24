@@ -1,6 +1,6 @@
 ---
 name: Pod Setup
-description: Set up a workspace's repositories in a pod so they run together and a person can click through, then bake it, so every later job starts in seconds. Once a workspace has an image, work in it is Pod's.
+description: Set up a workspace in a pod, the app a person clicks through first and then whatever else can run beside it, and bake it, so every later job starts in seconds. Once a workspace has an image, work in it is Pod's.
 parents:
   - Pod
 claims:
@@ -9,7 +9,7 @@ claims:
       - { type: stadeum/pods/baked, name: a ready image from this job's pod }
   - text: From that image, a signed-out browser reaches the app, signs in as the test user and opens the pages a person would use, with no error page.
   - text: It asked the person for no secret and wrote none into a file.
-  - text: The workspace's page draws each system and each connection between them, says how they fit together, and says how to run them.
+  - text: The workspace's page draws each system and each connection between them, says how they fit together and how to run them, and says which repositories run in the pod and which are only source.
 ---
 A workspace with no image yet: a bare pod, its repositories cloned, and
 nothing running. Set it up until a person can use it, then bake it. What
@@ -18,8 +18,24 @@ above this one: open it first if it isn't in front of you.
 
 Done means: an image this work baked; from it, a person signs in as the
 test user and clicks through the pages they would use; no real secret
-asked for or written down; and the workspace's page written. The bake
-saves `/workspaces/.pod` to strut, so it needs no pull request.
+asked for or written down; and the workspace's page written, saying what
+runs and what is only source. The bake saves `/workspaces/.pod` to
+strut, so it needs no pull request.
+
+## What runs
+
+The app a person clicks through comes first: get it running end to end,
+signed in and through the pages they would use. Then run every other
+repository that can run beside it, wired to it. A change often spans
+several (a frontend and its backend), and a job sees the whole of it
+only where they all run.
+
+Not every repository can run in a pod: a phone app, or one for a
+platform the pod lacks. It stays as source, to read and change in pull
+requests. That's fine, not a failure; the workspace's page says so.
+
+How you get there is yours to judge. Nothing needs the person's
+go-ahead first.
 
 ## The setup is in the connections
 
@@ -70,7 +86,8 @@ text as `page`. It holds, in this order:
   labelled with the setting that points it;
 - the system in words: how the parts fit together;
 - how to run it: the services and ports, the test user, and what broke
-  and how it was fixed.
+  and how it was fixed;
+- what runs in the pod and what is only source, and why.
 
 It sits under `Pod`, and under `Codebase` when the box has one. A pod
 released without a bake leaves no page. The workspace holds its

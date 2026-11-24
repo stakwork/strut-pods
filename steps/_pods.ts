@@ -441,13 +441,19 @@ export async function workspaceOf(ctx: Ctx, workspace: string): Promise<Space | 
   return { ref_id: space.ref_id, repositories };
 }
 
-/** A node by its ref_id, a deleted one too: its name, or undefined when
- *  it is gone for good or the box has no graph. */
-export async function nodeName(ctx: Ctx, ref_id: string): Promise<string | undefined> {
+/** A node by its ref_id, a deleted one too: its name, and its `note`
+ *  when it has one (a Workspace stadeum/code's Set Up wrote), or undefined
+ *  when it is gone for good or the box has no graph. */
+export async function nodeOf(ctx: Ctx, ref_id: string): Promise<{ name?: string; note?: string } | undefined> {
   const got = await graph<{ properties?: Record<string, unknown> }>(ctx, "graph-get", { ref_id, include_deleted: true });
   if (!got || typeof got === "string") return undefined;
-  return text(got.properties?.["name"]) || undefined;
+  const name = text(got.properties?.["name"]);
+  const note = text(got.properties?.["note"]).trim();
+  return { ...(name ? { name } : {}), ...(note ? { note } : {}) };
 }
+
+/** A node's name by its ref_id, a deleted one's too. */
+export const nodeName = async (ctx: Ctx, ref_id: string) => (await nodeOf(ctx, ref_id))?.name;
 
 // ── the workspace's `.pod/` ───────────────────────────────────────────────
 

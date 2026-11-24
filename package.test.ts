@@ -27,7 +27,11 @@
  * - files on a node (`ctx.services.nodeFiles`, strut `plans/package-seams.md`
  *   §1), with that plan's API, where this strut doesn't keep them itself
  *   (before stakwork/strut#851). A strut that refuses `on:` (the same plan,
- *   §2) gets the package without it: its workflows are run here directly.
+ *   §2) gets the package without it: its workflows are run here directly;
+ * - strut's `conversation/start` (the same plan, §7), with that plan's API,
+ *   in place of whatever this strut has, and taken away to see `setup` on
+ *   a strut without it. A `stadeum/code` whose `Workspace` has no `note`
+ *   yet is installed from a copy that declares it.
  *
  *   STRUT_DIR=../../strut STRUT_CODE_DIR=../../strut-code npm test
  */
@@ -378,6 +382,17 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     const res = await installing(dir);
     assert.equal(res.status, 201, JSON.stringify(await res.json()));
   };
+  /** stadeum/code, its `Workspace` with the `note` its Set Up writes
+   *  (stadeum `plans/software.md` row 26). One from before the note is
+   *  installed from a copy that declares it. */
+  const codeWithNote = async () => {
+    const yaml = await readFile(join(CODE, "graph", "Workspace.yaml"), "utf8");
+    if (/^\s+note:/m.test(yaml)) return CODE;
+    const copy = join(root, "code-package");
+    await cp(CODE, copy, { recursive: true, filter: (src) => !src.includes("node_modules") });
+    await writeFile(join(copy, "graph", "Workspace.yaml"), yaml.replace(/^attributes:\n/m, "attributes:\n  note: ?string\n"));
+    return copy;
+  };
   /** Whether this strut took the package's `on:` (strut#851): then strut
    *  runs `setup` and `drop-images` on the graph's writes itself. */
   let takesOn = false;
@@ -531,7 +546,7 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
   });
 
   it("claims as today a workspace stadeum/code doesn't know", async () => {
-    await install(CODE);
+    await install(await codeWithNote());
     const out = await claim("nowhere", "ada", "job-unknown");
     assert.equal(out.repositories, undefined);
     assert.match(out.note, TODAY);
@@ -875,23 +890,84 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     assert.ok(!(await jobTitled("Set up shop")), "a job made shop: no setup job");
   });
 
-  it("setup leaves a workspace a job made to that job, and starts no job in a trial", async () => {
+  /** Runs `fn` with strut's step `type` as `def`, or with none when `def`
+   *  is undefined, whatever this strut has: the run's `ctx.registry` is
+   *  strut's registry at the run's start. */
+  const withStep = async <T>(type: string, def: unknown, fn: () => Promise<T>): Promise<T> => {
+    const registry = strut.getRegistry();
+    const had = registry[type];
+    if (def) registry[type] = def;
+    else delete registry[type];
+    try {
+      return await fn();
+    } finally {
+      if (had) registry[type] = had;
+      else delete registry[type];
+    }
+  };
+  /** Strut's `conversation/start` (strut `plans/package-seams.md` §7), with
+   *  that plan's API: records each call and who made it, and answers with a
+   *  chat and its job as strut would. */
+  const chats: Array<{ config: any; actor?: string; job?: string }> = [];
+  const conversationStart = {
+    type: "conversation/start",
+    input: { parse: (v: unknown) => v },
+    async run(config: any, ctx: any) {
+      chats.push({ config, actor: ctx.actor, job: ctx.job });
+      return { session: `${ctx.actor}/0123456789ab`, job: `job-chat-${chats.length}` };
+    },
+  };
+
+  it("setup leaves a workspace a job made to that job, and starts no chat or job in a trial", async () => {
     const ref = await workspace("made", [{ url: a.url("acme/docs"), name: "docs" }]);
-    assert.deepEqual(await onWrite("setup", { ref_id: ref, type: "Workspace", op: "created", by: "r1", job: "job-maker" }), {
-      started: false,
-      note: "Job job-maker made the workspace, so it sets it up itself.",
+    await withStep("conversation/start", conversationStart, async () => {
+      const before = chats.length;
+      assert.deepEqual(await onWrite("setup", { ref_id: ref, type: "Workspace", op: "created", by: "r1", job: "job-maker" }), {
+        started: false,
+        note: "Job job-maker made the workspace, so it sets it up itself.",
+      });
+      const held = await onWrite("setup", { ref_id: ref, type: "Workspace", op: "created", by: "r1" }, "ada", TRIAL);
+      assert.equal(held.started, false);
+      assert.equal(held.workspace, "made");
+      assert.match(held.note, /^A strut trial starts no job: one would set made up\.$/);
+      assert.equal(chats.length, before, "no chat started");
     });
-    const held = await onWrite("setup", { ref_id: ref, type: "Workspace", op: "created", by: "r1" }, "ada", TRIAL);
-    assert.equal(held.started, false);
-    assert.equal(held.workspace, "made");
-    assert.match(held.note, /^A strut trial starts no job: one would set made up\.$/);
   });
 
-  it("setup starts a job on Pod Setup as the person who made the workspace", async () => {
+  it("setup starts a Jamie chat as the person who made the workspace: their words, the Pod Setup job, about the workspace", async () => {
+    // As the Code app's Set Up writes one: the person's note on the node.
+    const noted = await node("Workspace", { name: "noted", note: "  The admin signs in at /admin.\nUse the staging API.\n" });
+    const made = (await named("Workspace", "made"))[0]!.ref_id;
+    await withStep("conversation/start", conversationStart, async () => {
+      const before = chats.length;
+      const out = await onWrite("setup", { ref_id: noted, type: "Workspace", op: "created", by: "r2" });
+      const job = `job-chat-${before + 1}`;
+      assert.deepEqual(out, { started: true, workspace: "noted", job, session: "ada/0123456789ab", note: `Job ${job} sets noted up on the Pod Setup page, in the chat ada/0123456789ab.` });
+      const [chat] = chats.slice(before);
+      assert.equal(chat!.actor, "ada", "as the person who made it");
+      assert.equal(chat!.job, undefined, "in no job's run");
+      assert.equal(chat!.config.message, "Set up noted\n\nThe admin signs in at /admin.\nUse the staging API.");
+      assert.equal(chat!.config.about, noted);
+      assert.deepEqual(Object.keys(chat!.config.job).sort(), ["brief", "kind", "title"]);
+      assert.equal(chat!.config.job.title, "Set up noted");
+      assert.equal(chat!.config.job.kind, "Pod Setup");
+      assert.match(chat!.config.job.brief, /^Set up the workspace noted in a pod, as the Pod Setup page says\. Claim its pod \(claim \{ workspace: "noted" \}\)/);
+
+      // With no note, the message is the title alone.
+      await onWrite("setup", { ref_id: made, type: "Workspace", op: "created", by: "r3" });
+      assert.equal(chats.at(-1)!.config.message, "Set up made");
+      assert.equal(chats.at(-1)!.config.about, made);
+    });
+    assert.ok(!(await jobTitled("Set up noted")), "no job/start beside the chat");
+  });
+
+  it("on a strut without conversation/start, setup starts the job on Pod Setup alone, as the person who made the workspace", async () => {
     const ref = (await named("Workspace", "made"))[0]!.ref_id;
-    const out = await onWrite("setup", { ref_id: ref, type: "Workspace", op: "created", by: "r2" });
+    const out = await withStep("conversation/start", undefined, () => onWrite("setup", { ref_id: ref, type: "Workspace", op: "created", by: "r2" }));
     assert.equal(out.started, true, out.note);
     assert.equal(out.workspace, "made");
+    assert.equal(out.session, undefined);
+    assert.match(out.note, /in no chat: this strut has no conversation\/start\.$/);
     // The job is launched detached: its record follows.
     let job: unknown;
     for (let i = 0; i < 100 && !job; i++) {
