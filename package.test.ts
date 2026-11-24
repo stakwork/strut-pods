@@ -592,9 +592,10 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     clean("claim's output", out);
   });
 
-  it("fetches in a pod from an image and leaves the pull to the agent", async () => {
+  it("fetches in a pod from an image and leaves the pull to the agent", async (t) => {
     // The image: the repositories as the last pod had them.
     service.images.set("shop", { image: 7, from: service.workspaces(shopPod) });
+    t.after(() => void service.images.delete("shop"));
     const head = a.commit("acme/web");
     const out = await claim("shop", "ada", "job-shop-image");
     assert.equal(out.image, 7);
@@ -603,14 +604,59 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
       [["/workspaces/api", "fetched"], ["/workspaces/web", "fetched"]],
     );
     assert.match(out.note, /^From image 7, its stack up\. Run `git pull` with git/);
-    const [api, web] = execsOf(out.pod);
+    assert.equal(out.removed, undefined, "the image has only shop's repositories");
+    // First the look for checkouts shop no longer has, with no token.
+    const [prune, api, web, ...more] = execsOf(out.pod);
+    assert.equal(more.length, 0);
+    assert.match(prune!.cmd, /^keep=\('api' 'web'\); /);
+    assert.deepEqual(prune!.env, {});
     assert.match(web!.cmd, /git -C 'web' -c credential\.helper= -c '.*' fetch --quiet origin/);
     assert.equal(web!.env["POD_GIT_TOKEN"], ONE);
     assert.equal(api!.env["POD_GIT_TOKEN"], TWO);
     const repo = join(service.workspaces(out.pod), "web");
     assert.equal(git(repo, "rev-parse", "origin/main"), head, "fetched");
     assert.notEqual(git(repo, "rev-parse", "HEAD"), head, "not pulled");
-    service.images.delete("shop");
+  });
+
+  it("a pod launched from an image loses its checkouts of repositories not in the workspace, and a later claim removes nothing", async (t) => {
+    // An image baked when shop also had `old`: its checkout, a folder that
+    // isn't one, and .pod, even one that looks like a checkout.
+    const image = join(root, "image-shop-old");
+    await cp(service.workspaces(shopPod), image, { recursive: true });
+    for (const d of ["old", ".pod"]) {
+      await mkdir(join(image, d));
+      git(join(image, d), "init", "-q");
+    }
+    await writeFile(join(image, ".pod", "compose.yml"), "services: {}\n");
+    await mkdir(join(image, "notes"));
+    await writeFile(join(image, "notes", "todo.md"), "mine\n");
+    service.images.set("shop", { image: 8, from: image });
+    t.after(() => void service.images.delete("shop"));
+
+    const job = "job-shop-pruned";
+    const out = await claim("shop", "ada", job);
+    assert.equal(out.image, 8);
+    assert.deepEqual(out.removed, ["/workspaces/old"]);
+    assert.match(out.note, / Removed the image's checkouts of repositories not in the workspace: \/workspaces\/old\.$/);
+    assert.deepEqual(
+      out.repositories.map((r: any) => [r.path, r.state]),
+      [["/workspaces/api", "fetched"], ["/workspaces/web", "fetched"]],
+    );
+    const ws = service.workspaces(out.pod);
+    assert.equal(await exists(join(ws, "old")), false, "old's checkout is gone");
+    for (const kept of ["api/.git", "web/.git", ".pod/.git", ".pod/compose.yml", "notes/todo.md"]) {
+      assert.ok(await exists(join(ws, kept)), `${kept} stays`);
+    }
+
+    // The agent clones something on purpose; claiming the pod again keeps it.
+    await mkdir(join(ws, "scratch"));
+    git(join(ws, "scratch"), "init", "-q");
+    const ran = execsOf(out.pod).length;
+    const again = await claim("shop", "ada", job);
+    assert.equal(again.pod, out.pod);
+    assert.equal(again.removed, undefined);
+    assert.ok(await exists(join(ws, "scratch", ".git")), "what the agent cloned stays");
+    assert.ok(!execsOf(out.pod).slice(ran).some((e) => e.cmd.startsWith("keep=")), "no look for checkouts to remove");
   });
 
   it("clones a public repository with no token, and says plainly whose account isn't connected for a private one", async () => {

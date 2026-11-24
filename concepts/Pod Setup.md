@@ -48,7 +48,8 @@ connection you wire is an arrow on the workspace's page.
 
 ## Working
 
-- `pod survey` reads the repositories. Write the stack in
+- The workspace's repositories are the ones `claim` listed. `pod survey`
+  reads them. Write the stack in
   `/workspaces/.pod`, beside them: it is the workspace's, not one
   repository's. A bare pod has the one strut keeps there already, when
   an earlier bake saved one: start from it.

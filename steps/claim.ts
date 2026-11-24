@@ -56,6 +56,28 @@ async function bring(c: Ctx, p: string, repo: Repository, taken: Set<string>): P
   return failed(signIn(c, repo.url, auth, said) ?? (said.split("\n").slice(-3).join(" ").slice(0, 500) || `git failed (${r.exit_code ?? "killed"})`));
 }
 
+/**
+ * A pod just launched from an image has the checkouts its bake had, and
+ * some may be of repositories the workspace no longer has (job 96dd97e9
+ * found two it never picked). Removes each folder directly under
+ * `/workspaces` that is a git checkout and isn't at one of `keep`, the
+ * workspace's repositories' names, in one command. The glob skips hidden
+ * folders, so `.pod` stays, and so does a symlink or a folder that isn't a
+ * checkout. Their paths.
+ */
+async function prune(c: Ctx, p: string, keep: string[]): Promise<string[]> {
+  const cmd =
+    `keep=(${keep.map(quote).join(" ")}); ` +
+    'for d in *; do [ -d "$d" ] && [ ! -L "$d" ] && [ -e "$d/.git" ] || continue; ' +
+    'for k in "${keep[@]}"; do [ "$d" = "$k" ] && continue 2; done; ' +
+    'rm -rf -- "$d" && echo "$d"; done';
+  const r = await run(c, p, cmd, { cwd: "/workspaces" });
+  return r.output
+    .split("\n")
+    .filter((d) => FOLDER.test(d) && !keep.includes(d))
+    .map((d) => `/workspaces/${d}`);
+}
+
 interface StackBrought {
   path: string;
   version: number;
@@ -86,7 +108,8 @@ export default defineStep({
     "Claim this job's POD for a workspace: a machine of the job's own with the workspace's repositories under /workspaces/<name>, its stack in /workspaces/.pod, " +
     "the services they need under Docker and the apps under pm2, each port served over HTTPS. " +
     "The first call launches it, from the workspace's newest image (its stack already running) or a bare one; later calls return the same pod. " +
-    "A workspace the box keeps has its repositories cloned into a bare pod, with the .pod/ its last bake kept, or fetched in a pod from an image. " +
+    "A workspace the box keeps has its repositories cloned into a bare pod, with the .pod/ its last bake kept, or fetched in a pod from an image, " +
+    "where the image's checkouts of repositories the workspace no longer has are removed. " +
     "Then work IN the pod with the pod tools (bash, edit, git, url), never with your own bash or editor, which act on strut's disk. " +
     "A workspace is a short lowercase name, as the box keeps it (\"hive\"). Read the Pod page for the loop.",
   input: z.object({
@@ -106,6 +129,10 @@ export default defineStep({
       .array(z.object({ url: z.string(), path: z.string(), state: z.enum(["cloned", "fetched", "failed"]), problem: z.string().optional() }))
       .optional()
       .describe("The workspace's repositories by name, when the box keeps it: each cloned, fetched, or failed with why"),
+    removed: z
+      .array(z.string())
+      .optional()
+      .describe("Checkouts the image had of repositories the workspace no longer has, removed when the pod launched"),
     stack: z
       .object({ path: z.string(), version: z.number(), state: z.enum(["written", "kept", "failed"]), problem: z.string().optional() })
       .optional()
@@ -132,6 +159,12 @@ export default defineStep({
       await hold(c, { pod: p.pod, workspace: cfg.workspace, ...(own ? { own } : {}) });
     }
 
+    // Only the claim that launched it (the service's 201): a later one of
+    // the same pod keeps whatever the agent cloned on purpose.
+    const removed =
+      r.status === 201 && p.image !== null && space && c.control?.state !== "cancelling"
+        ? await prune(c, p.pod, space.repositories.map((x) => x.name).filter((n) => FOLDER.test(n)))
+        : [];
     const brought: Brought[] = [];
     const taken = new Set<string>();
     for (const repo of space?.repositories ?? []) {
@@ -163,6 +196,7 @@ export default defineStep({
     } else {
       note = `From image ${p.image}; its stack is still starting. \`pod status\` and \`pod logs\` with bash show where it is.`;
     }
+    if (removed.length) note += ` Removed the image's checkouts of repositories not in the workspace: ${removed.join(", ")}.`;
     if (brought.some((b) => b.state === "failed")) note += " Some of its repositories aren't here: each one's problem says why.";
     if (stack?.state === "failed") note += ` Its .pod/ from strut couldn't be written to ${STACK}: its problem says why.`;
     return {
@@ -173,6 +207,7 @@ export default defineStep({
       ready: isReady,
       ...(body.problems?.length ? { problems: body.problems } : {}),
       ...(brought.length ? { repositories: brought } : {}),
+      ...(removed.length ? { removed } : {}),
       ...(stack ? { stack } : {}),
       note,
     };

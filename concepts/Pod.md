@@ -17,7 +17,8 @@ pod. Your own `bash` and editor act on strut's disk, never on the pod.
 
 1. **Claim** the pod with the workspace's name. A workspace the box
    keeps comes with its repositories at `/workspaces/<name>`: `claim`
-   fetches them in a pod from an image. Its answer says, for each one, what it did, or why
+   fetches them in a pod from an image, and removes the image's checkouts
+   of repositories the workspace no longer has (`removed`). Its answer says, for each one, what it did, or why
    it couldn't (pass that on to the person). With an image, the stack is
    already running: run `git pull` with `git`, then `pod up` with `bash`.
    A workspace with no image yet comes as a bare pod, with nothing

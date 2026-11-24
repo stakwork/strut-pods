@@ -5,7 +5,7 @@ and a link to see it.
 
 | Tool | Does |
 | --- | --- |
-| `claim { workspace }` | The job's pod: launched on the first call, the same pod on later ones. The workspace's repositories, when the box keeps it, cloned into a bare pod or fetched in one from an image, and in a bare pod its `.pod/` from strut at `/workspaces/.pod` |
+| `claim { workspace }` | The job's pod: launched on the first call, the same pod on later ones. The workspace's repositories, when the box keeps it, cloned into a bare pod or fetched in one from an image (which loses its checkouts of repositories the workspace no longer has), and in a bare pod its `.pod/` from strut at `/workspaces/.pod` |
 | `bash { command, cwd?, timeout? }` | A command in the pod, with the result strut's own `bash` gives |
 | `edit { command, path, ... }` | Strut's editor (`view`, `create`, `str_replace`, `insert`) on the pod's files |
 | `git { args, repo?, pr? }` | `git <args>` in the pod, with the person's token for the remote's host for that one command. With `pr`, a push opens a pull request |
@@ -39,9 +39,15 @@ image yet, up to the bake and the workspace's page.
 **A workspace's repositories** are read from strut's graph, as the
 `stadeum/code` package keeps them (its `Repositories` page has the
 contract): a `Workspace` by name, and its `INCLUDES` links to
-`Repository` nodes, by name. A workspace has no main repository. Nothing
-requires that package: on a box without it, or for a name it doesn't
-know, `claim` brings no repositories and the agent clones them.
+`Repository` nodes, by name. A workspace has no main repository. When
+`claim` launches a pod from an image, it first removes each git checkout
+directly under `/workspaces` that isn't one of them, so a repository taken
+out of the workspace since the bake goes, and its answer lists them
+(`removed`). `.pod`, and anything that isn't a git checkout, stay. A later
+claim of the same pod removes nothing: the agent may have cloned something
+on purpose. Nothing requires that package: on a box without it, or for a
+name it doesn't know, `claim` brings no repositories, removes nothing, and
+the agent clones them.
 
 **A workspace's `.pod/`** is its own, at `/workspaces/.pod` beside the
 repositories (PLAN.md §1), and strut keeps it: this package's files on
