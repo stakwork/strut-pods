@@ -31,7 +31,10 @@
  * - strut's `conversation/start` (the same plan, §7), with that plan's API,
  *   in place of whatever this strut has, and taken away to see `setup` on
  *   a strut without it. A `stadeum/code` whose `Workspace` has no `note`
- *   yet is installed from a copy that declares it.
+ *   yet is installed from a copy that declares it;
+ * - GitHub's `GET /user`, in strut's `http`: it answers cat's made-up
+ *   token with cat's account, and counts what it was asked. Every other
+ *   address goes where it says.
  *
  *   STRUT_DIR=../../strut STRUT_CODE_DIR=../../strut-code npm test
  */
@@ -55,7 +58,12 @@ const PODS_TOKEN = `pods-${randomBytes(8).toString("hex")}`;
 /** Each forge's token, as ada connected it. Nobody's. */
 const ONE = `one-${randomBytes(12).toString("hex")}`;
 const TWO = `two-${randomBytes(12).toString("hex")}`;
-const TOKENS = [ONE, TWO];
+/** cat's GitHub token, made up for this run: GitHub's stand-in answers it alone. */
+const GH = `gh-${randomBytes(12).toString("hex")}`;
+const TOKENS = [ONE, TWO, GH];
+/** cat's GitHub account, as the stand-in says it. */
+const CAT = { login: "cat-gh", id: 4242, name: "Cat Hub" };
+const CAT_IDENTITY = "Cat Hub <4242+cat-gh@users.noreply.github.com>";
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "init.defaultBranch=main", ...args], { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", HOME: cwd } }).trim();
@@ -407,6 +415,8 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     for (const t of TOKENS) assert.ok(!text.includes(t), `a token in ${what}`);
   };
   const execsOf = (pod: string) => service.execs.filter((e) => e.pod === pod);
+  /** What GitHub's stand-in was asked for /user. */
+  let githubAsked = 0;
   /** The pod `shop` was cloned into. */
   let shopPod = "";
 
@@ -442,8 +452,15 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     // A strut that keeps files on a node builds them into its bag; a host's
     // own would win over them, so the stand-in comes only without them.
     const keepsFiles = (await readFile(join(STRUT, "src", "createStrut.ts"), "utf8")).includes("nodeFiles");
+    const { httpCapability } = await from<any>("capabilities.ts");
+    const http = httpCapability(async (url: string, init?: { headers?: Record<string, string> }) => {
+      if (url !== "https://api.github.com/user") return fetch(url, init as RequestInit);
+      githubAsked++;
+      const ok = new Headers(init?.headers).get("authorization") === `Bearer ${GH}`;
+      return new Response(JSON.stringify(ok ? CAT : { message: "Bad credentials" }), { status: ok ? 200 : 401, headers: { "content-type": "application/json" } });
+    });
     strut = await createStrut({
-      ...(keepsFiles ? {} : { services: { nodeFiles: nodeFilesStandIn() } }),
+      services: { http, ...(keepsFiles ? {} : { nodeFiles: nodeFilesStandIn() }) },
       workspace: new GraphWorkspaceStore(graph, { materializeDir: join(root, "steps"), appsDir: join(root, "apps") }),
       dataDir: root,
       store,
@@ -506,6 +523,8 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     // ada connected both forges; bob connected none.
     await put("/actors/ada/secrets/ONE_TOKEN", ONE);
     await put("/actors/ada/secrets/TWO_TOKEN", TWO);
+    // cat connected GitHub.
+    await put("/actors/cat/secrets/GITHUB_TOKEN", GH);
   });
 
   after(async () => {
@@ -551,6 +570,34 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     assert.equal(out.repositories, undefined);
     assert.match(out.note, TODAY);
     assert.deepEqual(execsOf(out.pod), []);
+  });
+
+  it("a commit in the pod is the person's, as GitHub says, over a name a command sets, and the token is in none of it", async () => {
+    const asked = githubAsked;
+    const out = await claim("nowhere", "cat", "job-cat");
+    // What job a39dbcf8's agent ran, in a pod with no identity.
+    const commit =
+      "git init -q who && cd who && git -c user.name=strut -c user.email=strut@users.noreply.github.com commit -q --allow-empty -m one && git log -1 --format='%an <%ae>|%cn <%ce>'";
+    const run = await step("stadeum/pods/bash", { command: commit }, "cat", "job-cat");
+    assert.equal(run.status, "success", JSON.stringify(run.error));
+    assert.equal(run.out.trim(), `${CAT_IDENTITY}|${CAT_IDENTITY}`);
+    // GitHub is asked once, however many commands.
+    assert.equal((await step("stadeum/pods/bash", { command: "true" }, "cat", "job-cat")).status, "success");
+    assert.equal(githubAsked - asked, 1);
+    // Nothing written to the pod's home, and the token in no command and on no disk.
+    assert.equal(await exists(join(root, "pods", out.pod, "root", ".gitconfig")), false);
+    assert.deepEqual(await holding(join(root, "pods", out.pod), TOKENS), []);
+    for (const e of execsOf(out.pod)) clean("a command", e);
+  });
+
+  it("a person with no GitHub account connected gets no identity, and GitHub isn't asked", async () => {
+    const asked = githubAsked;
+    const out = await claim("nowhere", "bob", "job-bob-who");
+    assert.equal((await step("stadeum/pods/bash", { command: "true" }, "bob", "job-bob-who")).status, "success");
+    const execs = execsOf(out.pod);
+    assert.equal(execs.length, 1);
+    assert.equal(execs[0]!.env["GIT_AUTHOR_NAME"], undefined);
+    assert.equal(githubAsked, asked);
   });
 
   /** shop's Workspace node. */

@@ -38,7 +38,10 @@ pod. Your own `bash` and editor act on strut's disk, never on the pod.
    the person's job card (below). Log in as the test user and open
    the pages that matter. A page that answers isn't proof that it works.
 4. **Push** the work on a branch and open a PR with `git`
-   (`push -u origin <branch>` with `pr`).
+   (`push -u origin <branch>` with `pr`). A commit is the person's: every
+   command in the pod carries their GitHub name and email. Never set a
+   name or email of your own. When git asks who you are, no GitHub
+   account is connected for them: say so.
 5. **Bake again** when the setup changed: `.pod/`, a new service, a new
    connection between the systems. Once the image is ready, pass `bake`
    (`status: true`) `edits` to the workspace's page, `<workspace>

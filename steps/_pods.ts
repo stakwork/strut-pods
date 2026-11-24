@@ -230,7 +230,9 @@ const KEEP_CHARS = 60_000;
 
 /**
  * Runs `cmd` with bash in the pod and waits for it, following its output.
- * `env` is for this command alone. A run that's cancelling kills it.
+ * `env` is for this command alone, beside the person's name and email as
+ * git's author and committer (`gitIdentity`). A run that's cancelling
+ * kills it.
  */
 export async function run(
   ctx: Ctx,
@@ -240,11 +242,12 @@ export async function run(
 ): Promise<Ran> {
   const timeout = opts.timeoutSeconds ?? 300;
   const keep = opts.keepChars ?? KEEP_CHARS;
+  const env = { ...(await gitIdentity(ctx)), ...opts.env };
   const started = await must<{ id: string }>(ctx, "exec in the pod", "POST", podd(p, "/exec"), {
     cmd,
     cwd: inPod(opts.cwd ?? "/workspaces"),
     timeout,
-    ...(opts.env ? { env: opts.env } : {}),
+    ...(Object.keys(env).length ? { env } : {}),
   });
   let output = "";
   let cut = 0;
@@ -372,6 +375,40 @@ export const githubHeaders = (token: string | undefined): Record<string, string>
   accept: "application/vnd.github+json",
   "user-agent": "stadeum-pods",
 });
+
+/** Each GitHub token's identity, kept an hour (a minute when GitHub
+ *  wouldn't say), so a pod's commands don't each ask. In this process's
+ *  memory only. */
+const identities = new Map<string, { until: number; env: Record<string, string> }>();
+
+/**
+ * Whose commits a pod's commands make: the run's person, as their GitHub
+ * account says, `<name> <id+login@users.noreply.github.com>`, the address
+ * GitHub credits to that account whatever email it keeps private. Git's
+ * author and committer variables, so it is the person's in every command
+ * (over a pod's or an image's `user.name`, and over one a command sets
+ * with `-c`), each turn's own person, and nothing is written to the pod's
+ * disk or baked into an image. A pod had no identity, so a job's agent
+ * made one up, `strut@users.noreply.github.com`, and GitHub credited the
+ * commit to the account named `strut` (job a39dbcf8). None when the
+ * person has no GitHub account connected, or GitHub won't say.
+ */
+export async function gitIdentity(ctx: Ctx): Promise<Record<string, string>> {
+  const token = await ctx.services.secrets.git?.("https://github.com/");
+  if (!token) return {};
+  const kept = identities.get(token);
+  if (kept && kept.until > Date.now()) return kept.env;
+  const r = await ctx.services.http("https://api.github.com/user", { headers: githubHeaders(token), timeout: 10_000 }).catch(() => undefined);
+  const u = (r?.ok ? r.body : undefined) as { login?: unknown; id?: unknown; name?: unknown } | undefined;
+  let env: Record<string, string> = {};
+  if (typeof u?.login === "string" && typeof u.id === "number") {
+    const name = typeof u.name === "string" && u.name.trim() ? u.name.trim() : u.login;
+    const email = `${u.id}+${u.login}@users.noreply.github.com`;
+    env = { GIT_AUTHOR_NAME: name, GIT_AUTHOR_EMAIL: email, GIT_COMMITTER_NAME: name, GIT_COMMITTER_EMAIL: email };
+  }
+  identities.set(token, { until: Date.now() + (Object.keys(env).length ? 3_600_000 : 60_000), env });
+  return env;
+}
 
 /** The open pull request from the branch `head`, as GitHub says: its
  *  address, number and the commit its branch is at. Throws when GitHub

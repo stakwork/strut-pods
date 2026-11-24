@@ -80,6 +80,18 @@ refuses a whole new text for a page that has one. It's linked under `Pod`,
 and under `Codebase` on a box that has that page. Then the old
 `<workspace> pod` page is deleted: the agent folded in what still holds.
 
+**A commit in a pod is the person's.** Every command the package runs
+in a pod carries git's author and committer variables for the run's
+person, as their GitHub account says: their name (or login) and
+`<id>+<login>@users.noreply.github.com`, the address GitHub credits to
+that account. They win over any `user.name` the pod or its image has, and
+over one a command sets with `-c`, and nothing is written to the pod's
+disk, so an image never carries one person's name into another's job.
+The account is read once an hour per token (`GET https://api.github.com/user`
+with the person's token for github.com). With no GitHub account connected,
+or when GitHub won't say, a command carries none: the pod's own config
+decides, and a pod has none, so git asks who you are.
+
 **In a strut trial, a pod leaves nothing behind.** A trial replays a
 case to judge a page's claims, and strut's contract for one is that
 nothing it starts outlasts it: every run of it carries `ctx.trial`, and a
