@@ -66,13 +66,10 @@ each link the job names, in their own browser, signed out.
   whose root sends a signed-out browser to sign in. A named link lands on
   its `path`: the app's sign-in page (`/signin`), or, for an app that
   takes its key in its URL, the pod's dev key (`/?key=<dev key>`).
-- **Open pod shows the app in a frame.** It opens beside the person's
-  chat, inside a page of another address, or in a tab. A page that
-  refuses frames (`X-Frame-Options`, `frame-ancestors`) shows nothing
-  there, though it works in a tab and in strut's browser. So does a page
-  the app frames itself: a browser checks every page above a frame, not
-  only the one that frames it. See the app in a frame before you say it
-  works. Where a frame is refused, allow it for the pod, in `.pod/`.
+- **Open pod shows the app in a frame** beside the person's chat, or in
+  a tab. The pods service lets the person's box frame the pod's pages; a
+  page from outside the pod that refuses frames, such as a Google or
+  GitHub sign-in, opens only in the tab.
 - **A dev key, never a secret.** An app that wants a key of its own gets
   a made-up one in `.pod/`, like the test user's password: it opens
   nothing outside the pod. A real secret never goes in a link: the job

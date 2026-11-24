@@ -63,8 +63,7 @@ connection you wire is an arrow on the workspace's page.
   (`Pod`'s "The person's links"), signed out, in strut's browser
   (`browser/verify`, `browser/walkthrough`). Sign in as the test user and
   open the pages that matter. A page that answers isn't proof that it
-  works, and neither is one that works on its own: the person sees the
-  app in a frame.
+  works.
 - Write `.pod/check.sh` from what you saw, so `pod check` proves it at
   every bake. What it leaves behind is baked: make it safe to run twice,
   and leave the app as a person would find it.
