@@ -914,14 +914,29 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     const name = `test/s${++n}`;
     await strut.workspace.publishWorkflowByContent(name, `steps:\n  - id: s\n    type: graph/create-node\n    config: ${JSON.stringify({ node_type: "Workspace", node_data: { name: "byhand" } })}\n`);
     const setUp = (ws: string) => chats.some((c) => c.config.job?.title === `Set up ${ws}`);
+    /** The `setup` run strut started for the workspace `ref`, once it ended. */
+    const setupOf = async (ref: string) => {
+      for (const id of await store.listRuns("stadeum/pods/setup")) {
+        const run = await store.getRunSummary("stadeum/pods/setup", id);
+        if (run?.input?.ref_id === ref) return run;
+      }
+    };
+    let byJob = "";
     await withStep("conversation/start", conversationStart, async () => {
       const made = (await strut.run(name, {}, { actor: "root", principal: "root" })) as { status: string; error?: unknown };
       assert.equal(made.status, "success", JSON.stringify(made.error));
+      // And one made under a job, with the stand-in there to start a chat
+      // if setup did.
+      byJob = await node("Workspace", { name: "byjob" });
       await eventually(() => setUp("byhand"), "a chat sets byhand up");
+      await eventually(async () => !!(await setupOf(byJob)), "setup runs on byjob too");
     });
     assert.equal(chats.find((c) => c.config.job?.title === "Set up byhand")!.actor, "root", "as the person who made it");
-    // Every other workspace here was made under a job.
-    assert.ok(!setUp("shop") && !(await jobTitled("Set up shop")), "a job made shop: no setup");
+    const left = (await setupOf(byJob))!;
+    assert.equal(left.status, "success", JSON.stringify(left.error));
+    assert.ok(left.input.job, "strut says which job made it");
+    assert.deepEqual(left.output, { started: false, note: `Job ${left.input.job} made the workspace, so it sets it up itself.` });
+    assert.ok(!setUp("byjob"), "a job made byjob: no chat");
   });
 
   it("setup leaves a workspace a job made to that job, and starts no chat or job in a trial", async () => {
