@@ -1024,6 +1024,15 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     assert.equal(service.deleted.length, before + 1);
   });
 
+  it("drop-images takes the name strut hands it (input.node), so a workspace gone for good still drops its images", async () => {
+    service.bakes.set("gone", [{ workspace: "gone", image: 1, state: "ready", from_pod: "pod-y" }]);
+    const before = service.deleted.length;
+    const out = await onWrite("drop-images", { ref_id: "no-such-node", type: "Workspace", op: "deleted", by: "r4", node: { ref_id: "no-such-node", name: "gone" } });
+    assert.deepEqual(out, { workspace: "gone", deleted: 1, note: "gone's images are deleted (1)." });
+    assert.deepEqual(service.deleted.slice(before), ["gone"]);
+    assert.equal(service.bakes.get("gone"), undefined);
+  });
+
   // ── a strut trial ───────────────────────────────────────────────────────
 
   /** A sample of a trial, as strut runs one: a job of its own, `trial-<batch>-<hex>`. */

@@ -1,5 +1,5 @@
 package: stadeum/pods
-version: 0.13.0
+version: 0.13.1
 description: A cloud machine for each coding job, with your repos cloned and your app running, so agents can run and test it.
 job:
   tools: [claim, bash, edit, git, url, bake, release]

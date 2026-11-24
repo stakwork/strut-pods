@@ -3,14 +3,16 @@ import { nodeOf, STACK, strutStep, WORKSPACE, type Ctx } from "./_pods.js";
 
 /** What strut hands a workflow it runs on a graph write (strut.yaml's
  *  `on:`, strut `plans/package-seams.md` §2): the node, its type, the
- *  write, the run that wrote it (or `proposal:<id>`), and that run's job
- *  when it has one. */
+ *  write, the run that wrote it (or `proposal:<id>`), that run's job
+ *  when it has one, and on a delete the node's values as they were (a
+ *  strut from before it hands none). */
 export interface OnWrite {
   ref_id?: string;
   type?: string;
   op?: string;
   by?: string;
   job?: string;
+  node?: Record<string, unknown>;
 }
 
 /** The job's brief: what `Pod Setup` asks, for this workspace. */

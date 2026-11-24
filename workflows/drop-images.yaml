@@ -7,6 +7,7 @@ input:
   op: { type: string, required: false, description: "the write: deleted" }
   by: { type: string, required: false, description: "the run that deleted it" }
   job: { type: string, required: false, description: "that run's job, when it has one" }
+  node: { type: json, required: false, description: "its values as they were before the delete: its name" }
 steps:
   - id: drop
     type: drop-images
