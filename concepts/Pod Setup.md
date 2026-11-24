@@ -72,18 +72,20 @@ connection you wire is an arrow on the workspace's page.
   it runs `pod up` and `pod check` there and keeps what they leave.
   Whatever you did by hand that isn't in `.pod/` (a package installed, a
   database seeded, a variable set) won't be in the image.
-- Once the image is ready, `bake` (`status: true`) saves
-  `/workspaces/.pod` to strut as the workspace's next version, so every
-  later bare pod starts from it. `.pod/` goes in no repository and no
-  pull request.
+- Starting a bake ends your turn, as its answer says: don't sleep or
+  poll. Strut gives the job a turn once the image is ready or failed,
+  having saved `/workspaces/.pod` to strut as the workspace's next
+  version, so every later bare pod starts from it. `.pod/` goes in no
+  repository and no pull request. A failed image says why: fix it in the
+  pod and bake again.
 
 ## The workspace's page
 
 `<workspace> workspace` (`hive workspace`) is what the next job or a
 person most needs: how the workspace's systems fit together, and what to
 set up to run them. The bake writes it, because that is when it's proven:
-once the image is ready, pass it to `bake` with `status: true`, its whole
-text as `page`. It holds, in this order:
+in the turn strut gives the job once the image is ready, pass it to `bake`
+with `status: true`, its whole text as `page`. It holds, in this order:
 
 - a diagram of the systems, in a `mermaid` block. Each arrow is a real
   connection (an HTTP route, a queue, a webhook, a shared database),

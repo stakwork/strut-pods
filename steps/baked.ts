@@ -10,7 +10,10 @@ import { held, must, type Ctx, type Image } from "./_pods.js";
  * strut closes its job, so the job still holds the pod and its images are
  * still there. With no job, or a job that holds no pod (released, or never
  * claimed), there is nothing to look at: it fails, and strut records no
- * verdict.
+ * verdict. Nor while the image is still building: the turn that started
+ * the bake ended, and the turn strut gives the job once it is ready or
+ * failed is judged instead. A trial's sample has no such turn, so there a
+ * building image is a verdict against it.
  */
 export default defineStep({
   type: "stadeum/pods/baked",
@@ -35,6 +38,7 @@ export default defineStep({
     if (!mine) return { supports: false, content: `The pod ${h.pod} baked no image of ${h.workspace}.` };
     const which = `Image ${mine.image} of ${h.workspace}, baked from this job's pod ${h.pod},`;
     if (mine.state === "ready") return { supports: true, content: `${which} is ready.` };
+    if (mine.state === "building" && !h.own) throw new Error(`baked: ${which} is still building; the job's turn once it's ready or failed is judged`);
     return { supports: false, content: `${which} is ${mine.state}${mine.reason ? `: ${mine.reason}` : ""}.` };
   },
 });

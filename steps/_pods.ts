@@ -19,6 +19,8 @@ interface StepDef {
 
 export interface Ctx {
   job?: string;
+  /** The run's id: what a follow-up names as the run that asks. */
+  runId?: string;
   /** Set when the run is a strut TRIAL (strut's `RunTrial`): nothing it
    *  starts may outlast it, so its pod gets a workspace of its own. */
   trial?: { case: string; claims: string[] };
@@ -42,6 +44,12 @@ export interface Ctx {
       holds(job: string): Promise<Array<{ id: string; kind: string; note?: string; url?: string; links?: Record<string, string>; release?: { type: string; input: unknown } }>>;
       /** One file of the job's directory, as strut's `job/read` reads it. */
       read?(job: string, path: string, opts?: { maxChars?: number }): Promise<{ text?: string } | null>;
+      /** Look at something again later and give the job a turn once it
+       *  settles (stakwork/strut, `plans/job-follow-ups.md`): strut runs
+       *  `look` as this run's person until its answer says `settled: true`.
+       *  Held to this run and this package's own steps. Absent on a strut
+       *  from before it. */
+      followUp?(ask: { job: string; runId: string; id?: string; look: { type: string; input?: unknown }; everySeconds?: number; limitMinutes?: number }): Promise<{ id: string; until: string }>;
     };
     /** Files a package keeps on a node (strut `plans/package-seams.md` §1,
      *  stakwork/strut#851): this package's own folder on it, a version at

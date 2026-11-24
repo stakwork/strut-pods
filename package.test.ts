@@ -345,6 +345,10 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
   let service: Pods;
   /** Everything strut logged while the tests ran. */
   const logged: string[] = [];
+  /** What the package's steps asked strut to follow up (strut
+   *  `plans/job-follow-ups.md`), stood in for so no look runs while the
+   *  tests do. Null on a strut from before follow-ups. */
+  let followUps: any[] | null = null;
   const console0 = { ...console };
   let n = 0;
 
@@ -482,6 +486,12 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
       staff: false,
       worker: false,
     });
+
+    const jobsCap = strut.services.jobs;
+    if (jobsCap?.followUp) {
+      followUps = [];
+      jobsCap.followUp = async (ask: any) => (followUps!.push(ask), { id: ask.id ?? ask.look.type, until: new Date(Date.now() + 3_600_000).toISOString() });
+    }
 
     await put("/secrets/PODS_URL", service.url);
     await put("/secrets/PODS_TOKEN", PODS_TOKEN);
@@ -836,6 +846,27 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     assert.deepEqual(await parentsOf(page.ref_id), (await concept("Codebase")) ? ["Codebase", "Pod"] : ["Pod"]);
     assert.equal(await concept("shop pod"), undefined, "the old page is deleted");
     assert.match(out.page.note, /shop pod is deleted\.$/);
+  });
+
+  it("starting a bake asks strut to look at it as this run until this pod's image is ready or failed, and says to end the turn", async (t) => {
+    if (!followUps) return t.skip("this strut has no follow-ups (strut plans/job-follow-ups.md)");
+    const before = followUps.length;
+    const out = await bake({});
+    assert.match(out.note, new RegExp(`^Image ${out.started} is baking, which takes about ten minutes\\. End your turn now: strut gives this job a turn when it's ready or failed`));
+    assert.equal(out.settled, false, "building");
+    assert.equal(followUps.length, before + 1);
+    const { runId, ...ask } = followUps.at(-1);
+    assert.deepEqual(ask, { job: "job-shop", id: "bake", look: { type: "stadeum/pods/bake", input: { status: true } }, limitMinutes: 60 });
+    assert.equal(typeof runId, "string", "its own run, which strut reads the person from");
+    // The look, as strut runs it: settled once this pod's image is ready, or failed.
+    assert.equal((await bake(ask.look.input)).settled, false);
+    latest().state = "failed";
+    assert.equal((await bake(ask.look.input)).settled, true);
+    latest().state = "ready";
+    const look = await bake(ask.look.input);
+    assert.equal(look.settled, true);
+    assert.equal(look.note, undefined, "a look starts nothing");
+    assert.equal(followUps.length, before + 1, "and asks for nothing");
   });
 
   it("changes the page in place with edits, never with a whole new text, and links it under Codebase", async () => {
@@ -1238,6 +1269,8 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     const shopBakes = JSON.stringify(service.bakes.get("shop"));
     let out = (await inTrial("stadeum/pods/bake", {})).out;
     assert.equal(out.started, 1, "the own workspace's first image");
+    assert.match(out.note, /Call bake with `status: true` until it's ready or failed\.$/, "a trial gets no later turn");
+    if (followUps) assert.ok(!followUps.some((a) => a.job === sample), "so it asks for no follow-up");
     assert.equal(service.bakes.get(sample)!.length, 1);
     assert.equal(JSON.stringify(service.bakes.get("shop")), shopBakes, "shop's images untouched");
     service.bakes.get(sample)![0]!.state = "ready";
@@ -1308,11 +1341,20 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     let r = await check(sample);
     assert.equal(r.status, "success", JSON.stringify(r.error));
     assert.deepEqual(r.out, { supports: true, content: `Image 1 of shop, baked from this job's pod ${trialPod}, is ready.` });
-    // Still building when the work ended: no.
+    // Still building when a trial's work ended: no. It gets no later turn.
     service.bakes.get(sample)![0]!.state = "building";
     r = await check(sample);
     assert.deepEqual(r.out, { supports: false, content: `Image 1 of shop, baked from this job's pod ${trialPod}, is building.` });
     service.bakes.get(sample)![0]!.state = "ready";
+    // A person's job still building: no verdict yet. Strut gives it a turn
+    // once the image is ready or failed, and that turn is judged.
+    const shop = service.bakes.get("shop")!.findLast((b) => b.from_pod === shopPod)!;
+    const was = shop.state;
+    shop.state = "building";
+    r = await check("job-shop");
+    assert.equal(r.status, "error");
+    assert.match(JSON.stringify(r.error), /is still building; the job's turn once it's ready or failed is judged/);
+    shop.state = was;
     // A job that holds no pod: nothing to look at, so no verdict.
     r = await check("job-nobody");
     assert.equal(r.status, "error");

@@ -43,10 +43,11 @@ pod. Your own `bash` and editor act on strut's disk, never on the pod.
    name or email of your own. When git asks who you are, no GitHub
    account is connected for them: say so.
 5. **Bake again** when the setup changed: `.pod/`, a new service, a new
-   connection between the systems. Once the image is ready, pass `bake`
-   (`status: true`) `edits` to the workspace's page, `<workspace>
-   workspace`, for what changed in how its systems connect or run
-   (`Pod Setup` says what the page holds), and update
+   connection between the systems. Then end your turn, as bake's answer
+   says: strut gives the job a turn once the image is ready or failed. In
+   it, pass `bake` (`status: true`) `edits` to the workspace's page,
+   `<workspace> workspace`, for what changed in how its systems connect
+   or run (`Pod Setup` says what the page holds), and update
    `.pod/check.sh` when what proves the app works changed. That call also
    saves `/workspaces/.pod` to strut, so `.pod/` needs no pull request.
 
