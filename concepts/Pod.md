@@ -77,7 +77,7 @@ At `/workspaces/.pod`, beside the repositories: the workspace's, not one
 repository's. Its commands run from `/workspaces`, so a path in it starts
 from there (`web/package.json`, `.pod/compose.yml`). Strut keeps it with
 the workspace: each bake saves it once its image is ready, and a bare pod
-starts with the latest. A repository's own `.pod/` still works where the
+starts with the latest. A workspace deleted and made again has none. A repository's own `.pod/` still works where the
 workspace has none. Each file is the stock tool's own format:
 
 - `compose.yml`: services run from images: databases, queues, stubs.

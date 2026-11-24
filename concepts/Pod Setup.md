@@ -52,7 +52,8 @@ connection you wire is an arrow on the workspace's page.
   reads them. Write the stack in
   `/workspaces/.pod`, beside them: it is the workspace's, not one
   repository's. A bare pod has the one strut keeps there already, when
-  an earlier bake saved one: start from it.
+  an earlier bake saved one: start from it. A workspace deleted and made
+  again has none.
 - `pod up`, then `pod status`. When something fails, read
   `pod logs <name> -n 100`, fix the config, and try again. Each try
   takes seconds.

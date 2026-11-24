@@ -26,8 +26,8 @@ Two workflows run on graph writes, never an agent's tools (strut.yaml's
 
 | Workflow | When | Does |
 | --- | --- | --- |
-| `setup` | `created: Workspace` | Starts a job on `Pod Setup` that sets the new workspace up and bakes it, in a Jamie chat of the person whose run made it (strut's `conversation/start`, `package-seams.md` §7): their message is "Set up <name>" and the workspace's `note`, and the chat is about the workspace. A strut without `conversation/start` starts the job alone (`job/start`). A workspace a job made is that job's to set up, so nothing starts |
-| `drop-images` | `deleted: Workspace` | Deletes the workspace's images from the service, by the name strut hands it from before the delete (`input.node`); a strut that hands none has the deleted node read. Its `.pod/` goes with its node |
+| `setup` | `created: Workspace` | Starts a job on `Pod Setup` that sets the new workspace up and bakes it, in a Jamie chat of the person whose run made it (strut's `conversation/start`, `package-seams.md` §7): their message is "Set up <name>" and the workspace's `note`, and the chat is about the workspace. A strut without `conversation/start` starts the job alone (`job/start`). A workspace a job made is that job's to set up, so nothing starts. First, one made again after it was deleted forgets the `.pod/` its node kept |
+| `drop-images` | `deleted: Workspace` | Deletes the workspace's images from the service, by the name strut hands it from before the delete (`input.node`); a strut that hands none has the deleted node read. Its `.pod/` stays on the node, which takes no write once deleted: `setup` forgets it if the workspace is made again |
 
 Each step is a few HTTP calls to the service, at `PODS_URL` with the box's
 tenant token in `PODS_TOKEN`. The steps find the job's pod in its hold,
@@ -60,6 +60,13 @@ base64, so a binary one comes through as it is. Nothing is saved in a
 trial, nor where the box keeps no such workspace. On a strut without
 files on a node, neither step does anything here, and a repository's own
 `.pod/` works as before.
+
+A deleted workspace keeps its `.pod/`: strut's delete is soft, and keeps
+a node's files. A workspace made again with its name is that node
+restored, files and all, so `setup` (on `created: Workspace`, which a
+restore is) writes an empty version over them first, which `claim` reads
+as none: the workspace starts from nothing, as it does with no images.
+`drop-images` can't do it: strut takes no write to a deleted node's files.
 
 **A workspace's page**, `<workspace> workspace`, is a Concept page: a
 Mermaid diagram of its systems and how they connect, the system in words,

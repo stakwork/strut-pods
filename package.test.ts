@@ -1079,6 +1079,80 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     assert.equal(service.bakes.get("gone"), undefined);
   });
 
+  it("a deleted workspace made again with its name starts with no stack: setup forgets the .pod/ its restored node kept", async () => {
+    // Job c0f96a68 on a Stadeum box: `stakwork` deleted, then Set Up for a
+    // new `stakwork`, and its bare pod came with the old .pod/.
+    /** The `setup` runs strut ran on the workspace `ref`, ended. */
+    const setups = async (ref: string) => {
+      const out: any[] = [];
+      for (const id of await store.listRuns("stadeum/pods/setup")) {
+        const run = await store.getRunSummary("stadeum/pods/setup", id);
+        if (run?.input?.ref_id === ref && run.status !== "running") out.push(run);
+      }
+      return out;
+    };
+    const ref = await workspace("again", [{ url: a.url("acme/docs"), name: "docs" }]);
+    // Its setup, on a strut that runs it, ends before there is a stack.
+    if (takesOn) await eventually(async () => (await setups(ref)).length === 1, "setup runs on again");
+
+    // Set up and baked: strut keeps its .pod/.
+    const first = await claim("again", "ada", "job-again");
+    await writeInPod(first.pod, STACK);
+    const bakeAgain = async (config: Record<string, unknown>) => {
+      const run = await step("stadeum/pods/bake", config, "ada", "job-again");
+      assert.equal(run.status, "success", JSON.stringify(run.error));
+      return run.out;
+    };
+    await bakeAgain({});
+    service.bakes.get("again")!.at(-1)!.state = "ready";
+    const saved = (await bakeAgain({ status: true })).stack;
+    assert.equal(saved.state, "saved", saved.note);
+    await step("stadeum/pods/release", {}, "ada", "job-again");
+
+    // Deleted as the Code app deletes it: its images go, its files stay.
+    const gone = await step("graph/delete-node", { ref_id: ref, reason: "a test" }, "root", `graph-${++n}`);
+    assert.equal(gone.status, "success", JSON.stringify(gone.error));
+    if (takesOn) await eventually(() => service.deleted.includes("again"), "strut runs drop-images");
+    else await onWrite("drop-images", { ref_id: ref, type: "Workspace", op: "deleted", by: "r5", node: { ref_id: ref, name: "again" } });
+    assert.equal(service.bakes.get("again"), undefined);
+    assert.equal((await kept(ref)).version, saved.version, "a soft delete keeps a node's files");
+
+    // Made again with its name, with no job, as the Code app's Set Up makes
+    // one: strut restores the node, and setup forgets its stack.
+    const made = `test/s${++n}`;
+    await strut.workspace.publishWorkflowByContent(made, `steps:\n  - id: s\n    type: graph/create-node\n    config: ${JSON.stringify({ node_type: "Workspace", node_data: { name: "again" } })}\n`);
+    const setUp = await withStep("conversation/start", conversationStart, async () => {
+      const run = (await strut.run(made, {}, { actor: "root", principal: "root" })) as { status: string; output: any; error?: unknown };
+      assert.equal(run.status, "success", JSON.stringify(run.error));
+      assert.equal((run.output?.s ?? run.output).ref_id, ref, "the same node, restored");
+      if (!takesOn) return onWrite("setup", { ref_id: ref, type: "Workspace", op: "created", by: "r6" }, "root");
+      await eventually(async () => (await setups(ref)).length === 2, "setup runs on again made again");
+      const run2 = (await setups(ref)).find((r) => r.output?.forgot !== undefined);
+      assert.ok(run2, JSON.stringify(await setups(ref)));
+      assert.equal(run2.status, "success", JSON.stringify(run2.error));
+      return run2.output;
+    });
+    assert.equal(setUp.started, true, setUp.note);
+    assert.equal(setUp.forgot, saved.version);
+    assert.match(setUp.note, new RegExp(`Its \\.pod/ from before it was deleted, version ${saved.version}, is forgotten: it starts with no stack\\.$`));
+    const forgotten = await kept(ref);
+    assert.equal(forgotten.version, saved.version + 1, "a version over it, the old one kept");
+    assert.deepEqual(forgotten.files, {});
+
+    // Its next pod is bare, and strut writes no stack into it.
+    const next = await claim("again", "ada", "job-again-2");
+    assert.equal(next.image, null);
+    assert.equal(next.stack, undefined);
+    assert.ok(!(await exists(join(service.workspaces(next.pod), ".pod"))), "no .pod/ in the pod");
+    assert.match(next.note, /^A bare pod: no image of this workspace yet\. .*write the workspace's stack in \/workspaces\/\.pod/);
+    await step("stadeum/pods/release", {}, "ada", "job-again-2");
+
+    // Made again with nothing to forget: nothing written.
+    const quiet = await withStep("conversation/start", conversationStart, () => onWrite("setup", { ref_id: ref, type: "Workspace", op: "created", by: "r7", job: "job-maker" }));
+    assert.deepEqual(quiet, { started: false, note: "Job job-maker made the workspace, so it sets it up itself." });
+    assert.equal((await kept(ref)).version, forgotten.version);
+  });
+
   // ── a strut trial ───────────────────────────────────────────────────────
 
   /** A sample of a trial, as strut runs one: a job of its own, `trial-<batch>-<hex>`. */

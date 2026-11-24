@@ -2,6 +2,7 @@ description: >-
   On `created: Workspace` (strut.yaml's `on:`): start a job on the Pod Setup
   page, in a Jamie chat of the person who made the workspace, that sets it
   up in a pod and bakes it. A workspace a job made is that job's to set up.
+  One made again after it was deleted first forgets the .pod/ it had.
 input:
   ref_id: { type: string, description: "the Workspace node" }
   type: { type: string, required: false, description: "its type: Workspace" }

@@ -493,14 +493,29 @@ export interface Stack {
 }
 
 /** The latest `.pod/` strut keeps on the workspace's node (this package's
- *  files on it), or undefined when it keeps none or this strut keeps no
- *  files on a node. */
+ *  files on it), or undefined when it keeps none, its latest is empty (one
+ *  `forgetStack` wrote), or this strut keeps no files on a node. */
 export async function storedStack(ctx: Ctx, ref_id: string): Promise<Stack | undefined> {
   const nf = ctx.services.nodeFiles;
   if (!nf) return undefined;
   const got = await nf.read(ref_id);
   if (!got || !Object.keys(got.files).length) return undefined;
   return { version: got.version, files: Object.fromEntries(Object.entries(got.files).map(([k, v]) => [k, Buffer.from(v)])) };
+}
+
+/**
+ * Forgets the `.pod/` strut keeps on a workspace's node: its next version
+ * is empty, which `storedStack` reads as none. The version forgotten, or
+ * undefined when it kept none. For a deleted workspace made again with its
+ * name: strut restores the node, and a soft delete keeps a node's files,
+ * while a deleted node takes no write, so the stack can't go with the
+ * images (`drop-images`) and goes when the workspace comes back (`setup`).
+ */
+export async function forgetStack(ctx: Ctx, ref_id: string): Promise<number | undefined> {
+  const stored = await storedStack(ctx, ref_id);
+  if (!stored) return undefined;
+  await ctx.services.nodeFiles!.write(ref_id, {}, { note: "no stack: the workspace was deleted" });
+  return stored.version;
 }
 
 /** A path in `.pod/` that stays in it: relative, plain segments. */

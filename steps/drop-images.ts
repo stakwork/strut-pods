@@ -5,8 +5,10 @@ import type { OnWrite } from "./setup.js";
 /**
  * Run by `on: deleted: Workspace` (strut.yaml), never an agent's tool:
  * deletes the workspace's images from the pods service (PLAN.md §8), as
- * `release` does for a trial's own. Its `.pod/` goes with its node, in
- * strut. The name is the node's as strut read it before the delete
+ * `release` does for a trial's own. Its `.pod/` stays on the node: strut
+ * keeps a deleted node's files and takes no write to them, so `setup`
+ * forgets it if the workspace is made again (`forgetStack`). The name is
+ * the node's as strut read it before the delete
  * (`input.node`); a strut that hands no `node` has the node read
  * deleted. One gone for good, with no `node`, has no name left to say,
  * so nothing is deleted.

@@ -1,5 +1,5 @@
 import { z, defineStep } from "strut";
-import { nodeOf, STACK, strutStep, WORKSPACE, type Ctx } from "./_pods.js";
+import { forgetStack, nodeOf, STACK, strutStep, WORKSPACE, type Ctx } from "./_pods.js";
 
 /** What strut hands a workflow it runs on a graph write (strut.yaml's
  *  `on:`, strut `plans/package-seams.md` §2): the node, its type, the
@@ -32,36 +32,54 @@ const brief = (name: string) =>
  * the workspace, so the Code app finds it (strut `package-seams.md` §7).
  * A strut from before `conversation/start` starts the job alone, in no
  * chat. A workspace a job made is that job's to set up, so nothing starts.
+ *
+ * First, whoever made it, a workspace made starts with no stack: one made
+ * again with a deleted one's name is that node restored, with the `.pod/`
+ * it had, and that is forgotten (`forgetStack`), as its images were.
  */
 export default defineStep({
   type: "stadeum/pods/setup",
   description:
     "Run by `on: created: Workspace`, NOT an agent's tool: starts a job on the Pod Setup page, in a Jamie chat of the person who made the workspace, that sets it up in a pod and bakes it. " +
-    "A workspace a job made is that job's to set up: nothing starts. Its input is what `on:` hands the workflow ({ ref_id, job? }).",
+    "A workspace a job made is that job's to set up: nothing starts. One made again after it was deleted first forgets the .pod/ it had. Its input is what `on:` hands the workflow ({ ref_id, job? }).",
   input: z.object({
     ref_id: z.string().optional().describe("The Workspace node. Default: the run's input"),
     job: z.string().optional().describe("The job of the run that made it, if any. Default: the run's input"),
   }),
-  output: z.object({ started: z.boolean(), workspace: z.string().optional(), job: z.string().optional(), session: z.string().optional(), note: z.string() }),
+  output: z.object({
+    started: z.boolean(),
+    workspace: z.string().optional(),
+    job: z.string().optional(),
+    session: z.string().optional(),
+    forgot: z.number().optional().describe("The version of .pod/ strut kept from before the workspace was deleted, now forgotten"),
+    note: z.string(),
+  }),
   async run(cfg, ctx) {
     const c = ctx as unknown as Ctx;
     const on: OnWrite = { ...((c.input ?? {}) as OnWrite), ...cfg };
     if (!on.ref_id) throw new Error("setup: no workspace to set up: `on: created: Workspace` hands its ref_id");
-    if (on.job) return { started: false, note: `Job ${on.job} made the workspace, so it sets it up itself.` };
-    const space = await nodeOf(c, on.ref_id);
-    const name = space?.name;
-    if (!name) return { started: false, note: `The workspace ${on.ref_id} is gone: nothing to set up.` };
-    if (!WORKSPACE.test(name)) return { started: false, workspace: name, note: `${JSON.stringify(name.slice(0, 100))} can't name a pod's workspace: lowercase letters, digits, '.', '_' and '-'.` };
-    if (c.trial) return { started: false, workspace: name, note: `A strut trial starts no job: one would set ${name} up.` };
-    const title = `Set up ${name}`;
-    const chat = await strutStep<{ session: string; job: string }>(c, "conversation/start", {
-      message: space?.note ? `${title}\n\n${space.note}` : title,
-      job: { title, kind: "Pod Setup", brief: brief(name) },
-      about: on.ref_id,
-    });
-    if (chat) return { started: true, workspace: name, job: chat.job, session: chat.session, note: `Job ${chat.job} sets ${name} up on the Pod Setup page, in the chat ${chat.session}.` };
-    const started = await strutStep<{ job: string }>(c, "job/start", { title, prompt: brief(name), kind: "Pod Setup" });
-    if (!started) throw new Error("setup: this strut has neither conversation/start nor job/start to start the job with");
-    return { started: true, workspace: name, job: started.job, note: `Job ${started.job} sets ${name} up on the Pod Setup page, in no chat: this strut has no conversation/start.` };
+    const forgot = c.trial ? undefined : await forgetStack(c, on.ref_id);
+    const out = await start(c, on.ref_id, on.job);
+    return forgot === undefined ? out : { ...out, forgot, note: `${out.note} Its .pod/ from before it was deleted, version ${forgot}, is forgotten: it starts with no stack.` };
   },
 });
+
+/** Starts the job that sets the workspace up, or says why none starts. */
+async function start(c: Ctx, ref_id: string, job: string | undefined) {
+  if (job) return { started: false, note: `Job ${job} made the workspace, so it sets it up itself.` };
+  const space = await nodeOf(c, ref_id);
+  const name = space?.name;
+  if (!name) return { started: false, note: `The workspace ${ref_id} is gone: nothing to set up.` };
+  if (!WORKSPACE.test(name)) return { started: false, workspace: name, note: `${JSON.stringify(name.slice(0, 100))} can't name a pod's workspace: lowercase letters, digits, '.', '_' and '-'.` };
+  if (c.trial) return { started: false, workspace: name, note: `A strut trial starts no job: one would set ${name} up.` };
+  const title = `Set up ${name}`;
+  const chat = await strutStep<{ session: string; job: string }>(c, "conversation/start", {
+    message: space?.note ? `${title}\n\n${space.note}` : title,
+    job: { title, kind: "Pod Setup", brief: brief(name) },
+    about: ref_id,
+  });
+  if (chat) return { started: true, workspace: name, job: chat.job, session: chat.session, note: `Job ${chat.job} sets ${name} up on the Pod Setup page, in the chat ${chat.session}.` };
+  const started = await strutStep<{ job: string }>(c, "job/start", { title, prompt: brief(name), kind: "Pod Setup" });
+  if (!started) throw new Error("setup: this strut has neither conversation/start nor job/start to start the job with");
+  return { started: true, workspace: name, job: started.job, note: `Job ${started.job} sets ${name} up on the Pod Setup page, in no chat: this strut has no conversation/start.` };
+}
