@@ -25,7 +25,8 @@ pod. Your own `bash` and editor act on strut's disk, never on the pod.
    running but the `/workspaces/.pod` strut keeps, if any: setting it
    up is `Pod Setup`'s, the page under this one, so open it. For a workspace the box doesn't know, `claim` brings no
    repositories: clone them with `git` (`clone <url>`, into
-   `/workspaces`), and set it up the same way.
+   `/workspaces`), and set it up the same way. Claim again at the start
+   of each turn that works in the pod: it renews the pod's model key.
 2. **Work.** Change the code or `.pod/`, then `pod up` or
    `pod restart <name>`, and `pod status`. `pod up` starts afresh an app
    whose definition in `pm2.config.js` changed, so it needs no
@@ -108,6 +109,22 @@ file.
   a mail service, a local database in place of a hosted one. Ask the
   person only for a secret no stub can stand in for, and never write a
   secret's value into a file.
+- **Models through the box.** When `claim`'s answer has `models`, every
+  command and `pod up` get `OPENAI_BASE_URL`, `OPENAI_API_KEY`,
+  `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY`, and on a newer box
+  `GOOGLE_GEMINI_BASE_URL` and `GEMINI_API_KEY` (Google's `@google/genai`
+  SDK): a key of the pod's own, billed to the person. `env` in `bash`
+  shows which. OpenRouter's models go through the OpenAI ones, with
+  `openrouter/` before the model's name (`openrouter/<org>/<model>`);
+  never set an `OPENROUTER_API_KEY`, which would send the key to
+  OpenRouter. Never ask the person for a model key. Name each
+  one an app uses in `.pod/`, never its value
+  (`OPENAI_API_KEY: process.env.OPENAI_API_KEY` in `pm2.config.js`,
+  `- ANTHROPIC_API_KEY` under a service's `environment` in
+  `compose.yml`), so the app gets it and starts again when it changes. An
+  app that reads other names gets them the same way
+  (`LLM_KEY: process.env.ANTHROPIC_API_KEY`). When `models` says `none`,
+  its `problem` is the reason: tell the person.
 - **Anything that never exits goes in `pm2.config.js`,** never in `bash`,
   whose command is killed when it ends or times out.
 - **pm2 runs a Node script through a wrapper of its own,** so the script

@@ -60,6 +60,14 @@ export interface Ctx {
       read(ref_id: string, opts?: { package?: string; version?: number }): Promise<{ package: string; version: number; files: Record<string, Uint8Array> } | null>;
       write(ref_id: string, files: Record<string, Uint8Array | string>, opts?: { note?: string }): Promise<{ version: number }>;
     };
+    /** Model calls for a machine outside strut (stakwork/strut#785,
+     *  `LlmGrants`): a key of its own through the box's gateway, billed to
+     *  the run's person. `grant` is null when nobody can be billed here.
+     *  Absent on a strut with no gateway. */
+    llm?: {
+      grant(req: { name: string; hours: number }): Promise<{ id: string; env: Record<string, string>; expiresAt: string } | null>;
+      revoke(id: string): Promise<void>;
+    };
   };
   /** The run's input: what strut hands a check (`job`), or an `on:`
    *  workflow (`ref_id`, `type`, `op`, `by`). */
@@ -115,6 +123,14 @@ export interface Held {
   /** A trial's pod: the workspace of its own it is under, named after
    *  the job, whose images `release` deletes (`trialWorkspace`). */
   own?: string;
+  /** The pod's model key (`modelKeys`): strut's grant id and when it
+   *  ends, never the key. `release` revokes it. */
+  grant?: Grant;
+}
+
+export interface Grant {
+  id: string;
+  until: string;
 }
 
 function jobsOf(ctx: Ctx) {
@@ -124,19 +140,23 @@ function jobsOf(ctx: Ctx) {
 }
 
 /** The job's pod, or the pod `id` the job holds, from its hold, or none.
- *  `own` is read from the hold's release, which only `hold` writes, never
- *  from what an agent passes, and is only ever the job's own name. */
+ *  `own` and `grant` are read from the hold's release, which only `hold`
+ *  writes, never from what an agent passes; `own` is only ever the job's
+ *  own name. */
 export async function held(ctx: Ctx, id?: string): Promise<Held | undefined> {
   const { job, jobs } = jobsOf(ctx);
   const h = (await jobs.holds(job)).find((x) => x.kind === KIND && (id === undefined || x.id === id));
   if (!h) return undefined;
-  const own = (h.release?.input as { own?: unknown } | undefined)?.own;
+  const input = h.release?.input as { own?: unknown; grant?: { id?: unknown; until?: unknown } } | undefined;
+  const own = input?.own;
+  const g = input?.grant;
   return {
     pod: h.id,
     workspace: h.note ?? "",
     ...(h.url ? { url: h.url } : {}),
     ...(h.links && Object.keys(h.links).length ? { links: h.links } : {}),
     ...(typeof own === "string" && own === job ? { own } : {}),
+    ...(typeof g?.id === "string" && typeof g.until === "string" ? { grant: { id: g.id, until: g.until } } : {}),
   };
 }
 
@@ -171,7 +191,7 @@ export async function hold(ctx: Ctx, h: Held): Promise<void> {
   await jobs.hold(job, {
     id: h.pod,
     kind: KIND,
-    release: { type: RELEASE, input: { pod: h.pod, ...(h.own ? { own: h.own } : {}) } },
+    release: { type: RELEASE, input: { pod: h.pod, ...(h.own ? { own: h.own } : {}), ...(h.grant ? { grant: h.grant } : {}) } },
     note: h.workspace,
     ...(h.url ? { url: h.url } : {}),
     ...(h.links && Object.keys(h.links).length ? { links: h.links } : {}),
@@ -298,6 +318,73 @@ export function shown(r: Ran, timeoutSeconds: number): string {
 
 /** Single-quotes a word for bash. */
 export const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+// ── a pod's model calls ───────────────────────────────────────────────────
+
+/** Hours a pod's model key lasts: the longest grant strut gives. */
+const GRANT_HOURS = 24;
+/** A claim renews a key with less than this left, so a turn that starts
+ *  with a claim has half a day of it. */
+const RENEW_MS = 12 * 3_600_000;
+
+/** What `claim` says of the pod's model variables. */
+export interface Models {
+  state: "set" | "kept" | "none";
+  /** When the key ends. */
+  until?: string;
+  problem?: string;
+}
+
+const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/**
+ * The pod's model variables (PLAN.md §3.2): strut's grant (`llm.grant`), a
+ * key of the pod's own through the box's gateway, billed to the run's
+ * person under the pod's name, put in podd's memory with `PUT /env`. So the
+ * pod's commands and apps get `OPENAI_BASE_URL`, `OPENAI_API_KEY`,
+ * `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY`. The hold keeps the grant's
+ * id and end, never the key, and `release` revokes it.
+ *
+ * A pod keeps its key until a claim finds less than RENEW_MS of it left:
+ * then a new one goes in and the old one is revoked. A pod with no key, or
+ * one that can't be renewed, never fails the claim: a pod is of use
+ * without one, and the answer says why. Undefined on a strut with no
+ * gateway.
+ */
+export async function modelKeys(ctx: Ctx, h: Held): Promise<Models | undefined> {
+  const llm = ctx.services.llm;
+  if (!llm) return undefined;
+  const had = h.grant;
+  if (had && Date.parse(had.until) - Date.now() > RENEW_MS) return { state: "kept", until: had.until };
+  // The key it has, while it lasts, or none.
+  const failed = (problem: string): Models => (had && Date.parse(had.until) > Date.now() ? { state: "kept", until: had.until, problem } : { state: "none", problem });
+  let grant;
+  try {
+    grant = await llm.grant({ name: h.pod, hours: GRANT_HOURS });
+  } catch (e) {
+    return failed(message(e));
+  }
+  if (!grant) return failed(`no model calls can be billed to ${ctx.principal ?? ctx.actor ?? "the person running this job"} on this box`);
+  const r = await call(ctx, "PUT", podd(h.pod, "/env"), grant.env).catch((e: unknown) => message(e));
+  if (typeof r === "string" || !r.ok) {
+    await llm.revoke(grant.id).catch(() => {});
+    return failed(typeof r === "string" ? `setting the pod's model variables: ${r}` : problem("setting the pod's model variables", r).message);
+  }
+  const g = { id: grant.id, until: grant.expiresAt };
+  await changeHold(ctx, h.pod, (x) => ({ ...x, grant: g }));
+  if (had) await llm.revoke(had.id).catch(() => {});
+  return { state: "set", until: g.until };
+}
+
+/** Revokes the hold's model key, if it has one and strut can. */
+export async function revokeKey(ctx: Ctx, h: Held | undefined): Promise<void> {
+  if (!h?.grant || !ctx.services.llm) return;
+  try {
+    await ctx.services.llm.revoke(h.grant.id);
+  } catch (e) {
+    throw new Error(`revoking ${h.pod}'s model key: ${message(e)}`);
+  }
+}
 
 // ── git ───────────────────────────────────────────────────────────────────
 

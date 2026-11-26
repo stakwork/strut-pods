@@ -1,10 +1,10 @@
 import { z, defineStep } from "strut";
-import { call, held, problem, type Ctx } from "./_pods.js";
+import { call, held, problem, revokeKey, type Ctx } from "./_pods.js";
 
 export default defineStep({
   type: "stadeum/pods/release",
   description:
-    "Release the job's pod: destroy it, with everything on it that isn't pushed or baked. " +
+    "Release the job's pod: destroy it, with everything on it that isn't pushed or baked, and revoke its model key. " +
     "Release when the job is done with it, or to claim another workspace. Strut also releases it when the job is deleted or idle. " +
     "A strut trial's pod takes what it baked with it.",
   input: z.object({
@@ -31,6 +31,9 @@ export default defineStep({
       const d = await call(c, "DELETE", `/workspaces/${encodeURIComponent(h.own)}/images`);
       if (!d.ok) throw problem(`deleting the images of ${h.own}`, d);
     }
+    // Its model key goes with it, so one left in a log dies with the pod.
+    // Until it does, the hold stays, so strut tries again.
+    await revokeKey(c, h);
     if (jobs) await jobs.release(c.job!, name);
     return { pod: name, released: true, ...(h?.own ? { images: h.own } : {}) };
   },

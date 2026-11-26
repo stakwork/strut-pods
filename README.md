@@ -5,13 +5,13 @@ and a link to see it.
 
 | Tool | Does |
 | --- | --- |
-| `claim { workspace }` | The job's pod: launched on the first call, the same pod on later ones. The workspace's repositories, when the box keeps it, cloned into a bare pod or fetched in one from an image (which loses its checkouts of repositories the workspace no longer has), and in a bare pod its `.pod/` from strut at `/workspaces/.pod` |
+| `claim { workspace }` | The job's pod: launched on the first call, the same pod on later ones. The workspace's repositories, when the box keeps it, cloned into a bare pod or fetched in one from an image (which loses its checkouts of repositories the workspace no longer has), and in a bare pod its `.pod/` from strut at `/workspaces/.pod`. On a box with a model gateway, a model key of the pod's own (below) |
 | `bash { command, cwd?, timeout? }` | A command in the pod, with the result strut's own `bash` gives |
 | `edit { command, path, ... }` | Strut's editor (`view`, `create`, `str_replace`, `insert`) on the pod's files |
 | `git { args, repo?, pr? }` | `git <args>` in the pod, with the person's token for the remote's host for that one command. With `pr`, a push opens a pull request |
 | `url { port, path?, name? }` | A link to one of the pod's ports, `{ url, expires }`, landing on `path` (query and all). The job's hold keeps a 12-hour one at the app's root, so its checks open `{{ urls.pod }}/<path>`, and the person's job card opens it as Open pod. With `name` (another app a person opens, `admin`), the hold keeps it as `{{ urls.admin }}` instead, landing on `path` (its sign-in, or `/?key=<dev key>`), a row of its own on the card, and `urls.pod` stays put |
 | `bake { status?, page?, edits? }` | The workspace's next image, from the pod. Starting one asks strut to look every minute and give the job a turn once it's ready or failed (strut's follow-ups), so the agent ends its turn. Once this pod's image is ready, `/workspaces/.pod` saved to strut and, with `page` or `edits`, the workspace's page |
-| `release { pod? }` | Destroys the pod. Strut runs it too when the job is deleted or swept. A trial's pod takes its images with it |
+| `release { pod? }` | Destroys the pod and revokes its model key. Strut runs it too when the job is deleted or swept. A trial's pod takes its images with it |
 
 One more step is a CHECK on a claim, never an agent's tool.
 `Pod Setup`'s claim names it, so strut judges that claim by what the
@@ -91,6 +91,26 @@ The account is read once an hour per token (`GET https://api.github.com/user`
 with the person's token for github.com). With no GitHub account connected,
 or when GitHub won't say, a command carries none: the pod's own config
 decides, and a pod has none, so git asks who you are.
+
+**A pod's model calls are the person's** (PLAN.md §3.2). On a strut with a
+model gateway, `claim` asks strut for a grant (`ctx.services.llm.grant`,
+stakwork/strut#785): a key of the pod's own through the box's gateway,
+named after the pod, billed to the run's person and capped by strut, for
+24 hours. It goes into podd's memory with `PUT /env`, so every command
+and `pod up` get `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `ANTHROPIC_BASE_URL`
+and `ANTHROPIC_API_KEY`, and from stakwork/strut#915 Gemini's
+`GOOGLE_GEMINI_BASE_URL` and `GEMINI_API_KEY`, and no disk or image has
+them. The package sets whatever the grant gives. OpenRouter's models go
+through the OpenAI variables, as `openrouter/<org>/<id>`. It's set before a
+bare pod has a `.pod/`, and a pod from an image runs its stack again with
+it. The hold keeps the grant's id and when it ends, never the key.
+A later claim keeps it, unless under 12 hours are left: then a new key
+goes in and the old one is revoked. `release` revokes it, and until it's
+revoked the hold stays, so strut tries again. A pod with no key is still
+claimed: on a strut with no gateway the answer says nothing of models,
+and otherwise `models` says why (nobody to bill, a refused grant, a podd
+without `PUT /env`, whose grant is revoked at once). A key that can't be
+renewed is kept while it lasts.
 
 **In a strut trial, a pod leaves nothing behind.** A trial replays a
 case to judge a page's claims, and strut's contract for one is that

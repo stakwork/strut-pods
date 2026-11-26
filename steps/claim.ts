@@ -1,5 +1,5 @@
 import { z, defineStep } from "strut";
-import { call, FOLDER, gitAuth, held, hold, problem, podd, quote, run, signIn, STACK, storedStack, trialWorkspace, workspaceOf, WORKSPACE, writeStack, type Ctx, type Repository, type Space } from "./_pods.js";
+import { call, FOLDER, gitAuth, held, hold, modelKeys, problem, podd, quote, revokeKey, run, signIn, STACK, storedStack, trialWorkspace, workspaceOf, WORKSPACE, writeStack, type Ctx, type Repository, type Space } from "./_pods.js";
 
 interface PodView {
   pod: string;
@@ -110,6 +110,7 @@ export default defineStep({
     "The first call launches it, from the workspace's newest image (its stack already running) or a bare one; later calls return the same pod. " +
     "A workspace the box keeps has its repositories cloned into a bare pod, with the .pod/ its last bake kept, or fetched in a pod from an image, " +
     "where the image's checkouts of repositories the workspace no longer has are removed. " +
+    "On a box with a model gateway, the pod gets a model key of its own, billed to the person (`models`); claim at the start of each turn that works in the pod, so it never runs out. " +
     "Then work IN the pod with the pod tools (bash, edit, git, url), never with your own bash or editor, which act on strut's disk. " +
     "A workspace is a short lowercase name, as the box keeps it (\"hive\"). Read the Pod page for the loop.",
   input: z.object({
@@ -137,6 +138,13 @@ export default defineStep({
       .object({ path: z.string(), version: z.number(), state: z.enum(["written", "kept", "failed"]), problem: z.string().optional() })
       .optional()
       .describe("A bare pod's /workspaces/.pod, when strut keeps the workspace's: written from its latest version, kept as the pod had it, or failed with why"),
+    models: z
+      .object({ state: z.enum(["set", "kept", "none"]), until: z.string().optional(), problem: z.string().optional() })
+      .optional()
+      .describe(
+        "The pod's model key, on a box with a model gateway: OPENAI_BASE_URL, OPENAI_API_KEY, ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY (and GOOGLE_GEMINI_BASE_URL and GEMINI_API_KEY on a newer box) in every command and `pod up`, " +
+          "set by this claim, kept from an earlier one, or none, with why. It ends at `until`: a claim renews it when under 12 hours are left",
+      ),
     note: z.string(),
   }),
   async run(cfg, ctx) {
@@ -152,12 +160,20 @@ export default defineStep({
     const r = await call(c, "POST", "/pods", { workspace: own ?? cfg.workspace, job: c.job }, 120_000);
     if (!r.ok) throw problem("claiming a pod", r);
     const p = r.body as PodView;
-    if (!mine || mine.pod !== p.pod) {
+    let h = mine;
+    if (!h || h.pod !== p.pod) {
       // The service launches another only once the job's pod is gone: its
-      // hold goes, so the tools find this one.
-      if (mine) await c.services.jobs!.release(c.job!, mine.pod);
-      await hold(c, { pod: p.pod, workspace: cfg.workspace, ...(own ? { own } : {}) });
+      // hold goes, and its key, so the tools find this one.
+      if (mine) {
+        await c.services.jobs!.release(c.job!, mine.pod);
+        await revokeKey(c, mine).catch(() => {});
+      }
+      h = { pod: p.pod, workspace: cfg.workspace, ...(own ? { own } : {}) };
+      await hold(c, h);
     }
+    // Before a bare pod has a .pod/, so nothing runs again for it; a pod
+    // from an image runs its stack again with them.
+    const models = c.control?.state !== "cancelling" ? await modelKeys(c, h) : undefined;
 
     // Only the claim that launched it (the service's 201): a later one of
     // the same pod keeps whatever the agent cloned on purpose.
@@ -199,6 +215,7 @@ export default defineStep({
     if (removed.length) note += ` Removed the image's checkouts of repositories not in the workspace: ${removed.join(", ")}.`;
     if (brought.some((b) => b.state === "failed")) note += " Some of its repositories aren't here: each one's problem says why.";
     if (stack?.state === "failed") note += ` Its .pod/ from strut couldn't be written to ${STACK}: its problem says why.`;
+    if (models?.state === "none") note += " It has no model key: `models.problem` says why.";
     return {
       pod: p.pod,
       workspace: cfg.workspace,
@@ -209,6 +226,7 @@ export default defineStep({
       ...(brought.length ? { repositories: brought } : {}),
       ...(removed.length ? { removed } : {}),
       ...(stack ? { stack } : {}),
+      ...(models ? { models } : {}),
       note,
     };
   },

@@ -34,7 +34,11 @@
  *   yet is installed from a copy that declares it;
  * - GitHub's `GET /user`, in strut's `http`: it answers cat's made-up
  *   token with cat's account, and counts what it was asked. Every other
- *   address goes where it says.
+ *   address goes where it says;
+ * - strut's grants (`ctx.services.llm`, stakwork/strut#785), as a host with
+ *   a model gateway gives them: each a made-up key, recorded with whose it
+ *   is, and every revoke. podd's `PUT /env` keeps each pod's variables in
+ *   the pods service's memory.
  *
  *   STRUT_DIR=../../strut STRUT_CODE_DIR=../../strut-code npm test
  */
@@ -161,6 +165,10 @@ interface Pods {
   claims: Array<{ workspace: string; job: string }>;
   /** Each workspace whose images it was asked to delete, in order. */
   deleted: string[];
+  /** Each pod's variables, as podd's `PUT /env` keeps them in memory. */
+  env: Map<string, Record<string, string>>;
+  /** What `PUT /env` answers: a test sets 404 for a podd without it. */
+  envStatus: { status: number };
   close(): Promise<void>;
 }
 
@@ -179,6 +187,8 @@ async function pods(dir: string, cainfo: string): Promise<Pods> {
   const bakes = new Map<string, Bake[]>();
   const claims: Array<{ workspace: string; job: string }> = [];
   const deleted: string[] = [];
+  const env = new Map<string, Record<string, string>>();
+  const envStatus = { status: 200 };
   const runs =new Map<string, { output: string; done: boolean; code: number | null; signal: number | null; child: ChildProcess; waiters: Array<() => void> }>();
   const workspaces = (pod: string) => join(dir, pod, "workspaces");
   const body = async (req: IncomingMessage): Promise<any> => {
@@ -248,6 +258,12 @@ async function pods(dir: string, cainfo: string): Promise<Pods> {
     if (!m) return json(res, 404, { error: "not found" });
     const [, pod, rest] = m as unknown as [string, string, string];
     if (rest === "/ready") return json(res, 200, { ready: true });
+    if (req.method === "PUT" && rest === "/env") {
+      if (envStatus.status !== 200) return json(res, envStatus.status, { error: "not found" });
+      const vars = { ...env.get(pod), ...((await body(req)) as Record<string, string>) };
+      env.set(pod, vars);
+      return json(res, 200, { names: Object.keys(vars).sort(), up: false });
+    }
     if (req.method === "POST" && rest === "/exec") {
       const e = (await body(req)) as { cmd: string; cwd: string; timeout: number; env?: Record<string, string> };
       if (e.cwd !== "/workspaces" && !e.cwd.startsWith("/workspaces/")) return json(res, 400, { error: "a cwd under /workspaces" });
@@ -292,8 +308,58 @@ async function pods(dir: string, cainfo: string): Promise<Pods> {
     bakes,
     claims,
     deleted,
+    env,
+    envStatus,
     close: () => new Promise((ok) => server.close(() => ok())),
   };
+}
+
+// ── strut's grants ────────────────────────────────────────────────────────
+
+interface Grants {
+  /** Every grant made, in order: whose, for what, and its key. */
+  made: Array<{ id: string; principal?: string; name: string; hours: number; key: string; env: Record<string, string> }>;
+  /** Every id revoked, in order. */
+  revoked: string[];
+  /** How long the next grants last. */
+  lifeMs: number;
+  /** Set to make the next grants fail with it. */
+  refuse?: string;
+  /** People nobody can bill here: their grant is null. */
+  unbilled: Set<string>;
+  llm: unknown;
+}
+
+/** `ctx.services.llm` (stakwork/strut#785, `LlmGrants`), as a host with a
+ *  gateway gives it: bound to the run's person by strut's runner
+ *  (`forPrincipal`). Each key is made up for this run, and nobody's. */
+function grantsStandIn(): Grants {
+  const g: Grants = { made: [], revoked: [], lifeMs: 24 * 3_600_000, unbilled: new Set(), llm: undefined };
+  const make = (principal: string | undefined) => ({
+    async grant(req: { name: string; hours: number }) {
+      if (g.refuse) throw new Error(g.refuse);
+      if (!principal || g.unbilled.has(principal)) return null;
+      const id = `grant-${g.made.length + 1}`;
+      const key = `sk-bf-${randomBytes(8).toString("hex")}.${randomBytes(12).toString("hex")}`;
+      const env = {
+        OPENAI_BASE_URL: "https://mothership.box.test/openai/v1",
+        OPENAI_API_KEY: key,
+        ANTHROPIC_BASE_URL: "https://mothership.box.test/anthropic",
+        ANTHROPIC_API_KEY: key,
+        GOOGLE_GEMINI_BASE_URL: "https://mothership.box.test/genai",
+        GEMINI_API_KEY: key,
+      };
+      g.made.push({ id, principal, name: req.name, hours: req.hours, key, env });
+      TOKENS.push(key);
+      return { id, env, expiresAt: new Date(Date.now() + g.lifeMs).toISOString() };
+    },
+    async revoke(id: string) {
+      g.revoked.push(id);
+    },
+    forPrincipal: (p: string) => make(p),
+  });
+  g.llm = make(undefined);
+  return g;
 }
 
 /** Every file under `dir` that holds one of `needles`. */
@@ -343,6 +409,7 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
   let a: Forge; // 127.0.0.1
   let b: Forge; // localhost
   let service: Pods;
+  const grants = grantsStandIn();
   /** Everything strut logged while the tests ran. */
   const logged: string[] = [];
   /** What the package's steps asked strut to follow up (strut
@@ -464,7 +531,7 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
       return new Response(JSON.stringify(ok ? CAT : { message: "Bad credentials" }), { status: ok ? 200 : 401, headers: { "content-type": "application/json" } });
     });
     strut = await createStrut({
-      services: { http, ...(keepsFiles ? {} : { nodeFiles: nodeFilesStandIn() }) },
+      services: { http, llm: grants.llm, ...(keepsFiles ? {} : { nodeFiles: nodeFilesStandIn() }) },
       workspace: new GraphWorkspaceStore(graph, { materializeDir: join(root, "steps"), appsDir: join(root, "apps") }),
       dataDir: root,
       store,
@@ -608,6 +675,111 @@ describe("stadeum/pods on strut", { timeout: 300_000 }, () => {
     assert.equal(execs.length, 1);
     assert.equal(execs[0]!.env["GIT_AUTHOR_NAME"], undefined);
     assert.equal(githubAsked, asked);
+  });
+
+  /** The job's hold on its pod, as strut keeps it, release and all. */
+  const podHold = async (job: string) => ((await strut.services.jobs.holds(job)) as any[]).find((h) => h.kind === "pod");
+
+  it("a pod gets a model key of its own, billed to the person under the pod's name, in podd's memory alone", async () => {
+    const job = "job-models";
+    const made = grants.made.length;
+    grants.lifeMs = 2 * 3_600_000;
+    const out = await claim("nowhere", "ada", job);
+    grants.lifeMs = 24 * 3_600_000;
+    const first = grants.made.at(-1)!;
+    assert.equal(grants.made.length, made + 1);
+    assert.deepEqual([first.principal, first.name, first.hours], ["ada", out.pod, 24]);
+    assert.equal(out.models?.state, "set");
+    assert.deepEqual(service.env.get(out.pod), first.env, "podd keeps the grant's variables");
+    // The hold keeps the grant's id and end, never its key; nor does the answer.
+    assert.deepEqual((await podHold(job)).release.input, { pod: out.pod, grant: { id: first.id, until: out.models.until } });
+    assert.ok(!JSON.stringify(await podHold(job)).includes(first.key));
+    clean("the claim's answer", out);
+    assert.deepEqual(await holding(join(root, "pods", out.pod), TOKENS), [], "on none of the pod's disks");
+
+    // Under 12 hours left: the next claim puts a new key in and revokes the old.
+    const renewed = await claim("nowhere", "ada", job);
+    const second = grants.made.at(-1)!;
+    assert.equal(renewed.models.state, "set");
+    assert.notEqual(second.id, first.id);
+    assert.deepEqual(service.env.get(out.pod), second.env);
+    assert.deepEqual(grants.revoked.at(-1), first.id);
+    assert.deepEqual((await podHold(job)).release.input.grant, { id: second.id, until: renewed.models.until });
+
+    // A day of it: kept, and nothing asked.
+    const kept = await claim("nowhere", "ada", job);
+    assert.deepEqual(kept.models, { state: "kept", until: renewed.models.until });
+    assert.equal(grants.made.at(-1)!.id, second.id);
+    // Other tools keep it on the hold.
+    assert.equal((await step("stadeum/pods/url", { port: 3000 }, "ada", job)).status, "success");
+    assert.equal((await podHold(job)).release.input.grant.id, second.id);
+
+    // Release revokes it.
+    const released = await step("stadeum/pods/release", {}, "ada", job);
+    assert.equal(released.status, "success", JSON.stringify(released.error));
+    assert.equal(grants.revoked.at(-1), second.id);
+  });
+
+  it("deleting the job revokes its pod's key, as strut releases the hold", async () => {
+    const job = "job-models-deleted";
+    const out = await claim("nowhere", "cat", job);
+    const g = grants.made.at(-1)!;
+    assert.equal(g.principal, "cat");
+    const res = await strut.app.request(`/jobs/${job}`, { method: "DELETE", headers: { "x-strut-actor": "root" } });
+    const body = await res.json();
+    assert.equal(res.status, 200, JSON.stringify(body));
+    assert.deepEqual(body.released, [out.pod]);
+    assert.equal(grants.revoked.at(-1), g.id);
+  });
+
+  it("a pod with no key is still claimed, and says why; one that can't be renewed keeps the key it has", async () => {
+    // Nobody can bill bob here.
+    grants.unbilled.add("bob");
+    const made = grants.made.length;
+    const bob = await claim("nowhere", "bob", "job-models-bob");
+    grants.unbilled.delete("bob");
+    assert.deepEqual(bob.models, { state: "none", problem: "no model calls can be billed to bob on this box" });
+    assert.match(bob.note, /no model key/);
+    assert.equal(service.env.get(bob.pod), undefined);
+    assert.equal(grants.made.length, made);
+
+    // strut refuses the grant (a job's budget spent, a host that says no).
+    grants.refuse = "job-models-refused has spent its budget";
+    const refused = await claim("nowhere", "ada", "job-models-refused");
+    grants.refuse = undefined;
+    assert.deepEqual(refused.models, { state: "none", problem: "job-models-refused has spent its budget" });
+    assert.equal((await podHold("job-models-refused")).release.input.grant, undefined);
+
+    // A key that can't be renewed is kept while it lasts.
+    grants.lifeMs = 3_600_000;
+    const short = await claim("nowhere", "ada", "job-models-short");
+    grants.lifeMs = 24 * 3_600_000;
+    grants.refuse = "the gateway is down";
+    const again = await claim("nowhere", "ada", "job-models-short");
+    grants.refuse = undefined;
+    assert.deepEqual(again.models, { state: "kept", until: short.models.until, problem: "the gateway is down" });
+
+    // A podd that takes no variables: the key it couldn't have is revoked at once.
+    service.envStatus.status = 404;
+    const old = await claim("nowhere", "ada", "job-models-old-podd");
+    service.envStatus.status = 200;
+    assert.equal(old.models.state, "none");
+    assert.match(old.models.problem, /^setting the pod's model variables: 404/);
+    assert.equal(grants.revoked.at(-1), grants.made.at(-1)!.id);
+    assert.equal((await podHold("job-models-old-podd")).release.input.grant, undefined);
+  });
+
+  it("on a strut with no model gateway, a claim sets nothing and says nothing of models", async () => {
+    const llm = strut.services.llm;
+    delete strut.services.llm;
+    try {
+      const out = await claim("nowhere", "ada", "job-no-gateway");
+      assert.equal(out.models, undefined);
+      assert.equal(service.env.get(out.pod), undefined);
+      assert.equal((await podHold("job-no-gateway")).release.input.grant, undefined);
+    } finally {
+      strut.services.llm = llm;
+    }
   });
 
   /** shop's Workspace node. */
